@@ -399,15 +399,6 @@ void BuildSectionButtons(SectionBuilder &builder) {
 		.keywords = { u"themes"_q, u"appearance"_q, u"stickers"_q },
 	});
 
-#ifdef Q_OS_MAC
-	builder.addButton({
-		.title = rpl::single(u"Оформление kukagram"_q),
-		.icon = { &st::menuIconChatBubble },
-		.onClick = [] { Core::App().showKukagramAppearance(); },
-		.keywords = { u"studio"_q, u"дизайн"_q, u"оформление"_q },
-	});
-#endif // Q_OS_MAC
-
 	{ // Folders
 		const auto preload = [=] {
 			session->data().chatsFilters().requestSuggested();

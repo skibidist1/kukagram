@@ -21,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/click_handler_types.h"
 #ifdef Q_OS_MAC
 #include "core/kukagram_account_groups_dialog.h"
+#include "mainwindow.h"
 #endif
 #include "data/data_changes.h"
 #include "data/data_document_media.h"
@@ -610,7 +611,48 @@ void MainMenu::setupAccounts() {
 	const auto inner = _accounts->entity();
 
 	inner->add(object_ptr<Ui::FixedHeightWidget>(inner, st::mainMenuSkip));
+#ifdef Q_OS_MAC
+	using namespace Core::KukagramAccountGroups;
+	const auto groupControls = _inner->insert(
+		1,
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			_inner.get(),
+			object_ptr<Ui::VerticalLayout>(_inner.get())));
+	const auto controls = groupControls->entity();
+	controls->add(
+		object_ptr<Ui::FlatLabel>(
+			controls,
+			MenuGroup().value() | rpl::map([](const std::optional<Group> &group) {
+				return group ? u"Группа: %1"_q.arg(group->name) : QString();
+			}),
+			st::mainMenuTelegramLabel),
+		{ st::mainMenuFooterLeft, st::mainMenuSkip, st::mainMenuFooterLeft, 0 });
+	Settings::AddButtonWithIcon(
+		controls,
+		rpl::single(u"Все аккаунты"_q),
+		st::mainMenuButton,
+		{ &st::menuIconShowAll }
+	)->setClickedCallback([] {
+		MenuGroup() = std::nullopt;
+	});
+	groupControls->setDuration(0)->toggleOn(
+		MenuGroup().value() | rpl::map([](const std::optional<Group> &group) {
+			return group.has_value();
+		}) | rpl::distinct_until_changed());
+	groupControls->finishAnimating();
+	auto events = Settings::SetupAccounts(
+		inner,
+		_controller,
+		MenuGroup().value() | rpl::map([](const std::optional<Group> &group) {
+			return group
+				? Settings::AccountsFilter(QSet<quint64>(
+					group->members.begin(),
+					group->members.end()))
+				: Settings::AccountsFilter();
+		}) | rpl::distinct_until_changed());
+#else // Q_OS_MAC
 	auto events = Settings::SetupAccounts(inner, _controller);
+#endif // Q_OS_MAC
 	inner->add(object_ptr<Ui::FixedHeightWidget>(inner, st::mainMenuSkip));
 
 	std::move(
@@ -780,11 +822,17 @@ void MainMenu::setupMenu() {
 #ifdef Q_OS_MAC
 	addAction(
 		rpl::single(u"Группы аккаунтов"_q),
-		{ &st::menuIconNewGroup }
+		{ &st::menuIconGroups }
 	)->setClickedCallback([=] {
+		const auto window = QPointer(controller->widget().get());
 		controller->window().hideSettingsAndLayer();
-		InvokeQueued(&Core::App(), [] {
-			Core::ShowKukagramAccountGroupsDialog();
+		InvokeQueued(&Core::App(), [window] {
+			Core::ShowKukagramAccountGroupsDialog([window] {
+				if (window && window->sessionContent()
+					&& !Core::Quitting() && !Core::App().passcodeLocked()) {
+					window->showMainMenu();
+				}
+			});
 		});
 	});
 #endif // Q_OS_MAC
@@ -857,10 +905,7 @@ void MainMenu::updateControlsGeometry() {
 }
 
 void MainMenu::updateInnerControlsGeometry() {
-	const auto contentHeight = _accounts->height()
-		+ _shadow->height()
-		+ st::mainMenuSkip
-		+ _menu->height();
+	const auto contentHeight = _footer->y() - _topShadowSkip->height();
 	const auto available = height() - st::mainMenuCoverHeight - contentHeight;
 	const auto footerHeight = std::max(
 		available,

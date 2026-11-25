@@ -1028,10 +1028,17 @@ void SetupAccountsWrap(
 
 AccountsList::AccountsList(
 	not_null<Ui::VerticalLayout*> container,
-	not_null<Window::SessionController*> controller)
+		not_null<Window::SessionController*> controller,
+		rpl::producer<AccountsFilter> filter)
 : _controller(controller)
 , _outer(container)
 , _outerIndex(container->count()) {
+	std::move(filter) | rpl::on_next([=](AccountsFilter value) {
+		_filter = std::move(value);
+		if (_addAccount) {
+			rebuild();
+		}
+	}, _outer->lifetime());
 	setup();
 }
 

@@ -27,11 +27,6 @@ struct PasscodeWrap final {
 	quint32 generation = 0;
 	QByteArray salt;
 	QByteArray keyEncrypted;
-}
-
-void Domain::startStored(not_null<Main::Account*> account) {
-	Expects(_localKey != nullptr);
-	account->start(account->prepareToStart(_localKey));
 };
 
 // The two legacy flags travel together and are cleared together. legacy says
@@ -279,9 +274,322 @@ constexpr auto kImportWrappedKeySize = qsizetype(16
 		}
 		data.passcodeWraps.push_back(std::move(wrap));
 	}
+	if (strict && (!inner.atEnd() || !stream.atEnd())) {
+		return ReadKeyDataResult::Failed;
+	}
 	return unsupportedCost
 		? ReadKeyDataResult::UnsupportedKdf
 		: ReadKeyDataResult::Success;
+}
+
+[[nodiscard]] TdataImportError ReadImportFile(
+		FileReadDescriptor &result,
+		const QString &name,
+		const QString &basePath,
+		qint64 limit) {
+	const auto folder = QFileInfo(QDir::cleanPath(basePath));
+	if (folder.isSymLink()) {
+		return TdataImportError::Corrupt;
+	}
+	const auto base = basePath + name;
+	auto candidates = QStringList();
+	const auto modern = QFileInfo(base + 's');
+	if (modern.exists() || modern.isSymLink()) {
+		candidates.push_back(modern.filePath());
+	} else {
+		const auto zero = QFileInfo(base + '0');
+		const auto one = QFileInfo(base + '1');
+		if (zero.exists() || zero.isSymLink()) {
+			candidates.push_back(zero.filePath());
+		}
+		if (one.exists() || one.isSymLink()) {
+			candidates.push_back(one.filePath());
+		}
+		if (candidates.size() == 2 && zero.lastModified() < one.lastModified()) {
+			std::swap(candidates[0], candidates[1]);
+		}
+	}
+	if (candidates.empty()) {
+		return TdataImportError::NotFound;
+	}
+	auto error = TdataImportError::Corrupt;
+	for (const auto &path : candidates) {
+		const auto info = QFileInfo(path);
+		if (!info.isFile() || info.isSymLink() || info.size() > limit) {
+			continue;
+		}
+		auto file = QFile(path);
+		if (!file.open(QIODevice::ReadOnly)) {
+			continue;
+		}
+		auto bytes = file.read(limit + 1);
+		if (bytes.size() < 24 || bytes.size() > limit || !file.atEnd()) {
+			continue;
+		}
+		constexpr auto magic = std::array{ 'T', 'D', 'F', '$' };
+		if (memcmp(bytes.constData(), magic.data(), magic.size())) {
+			continue;
+		}
+		auto version = qint32();
+		memcpy(&version, bytes.constData() + magic.size(), sizeof(version));
+		if (version < 0) {
+			continue;
+		} else if (version > AppVersion) {
+			error = TdataImportError::Unsupported;
+			continue;
+		}
+		const auto payloadSize = qint32(bytes.size() - 24);
+		const auto payload = bytes.constData() + 8;
+		auto md5 = HashMd5();
+		md5.feed(payload, payloadSize);
+		md5.feed(&payloadSize, sizeof(payloadSize));
+		md5.feed(&version, sizeof(version));
+		md5.feed(magic.data(), magic.size());
+		if (memcmp(md5.result(), payload + payloadSize, 16)) {
+			continue;
+		}
+		result.data = QByteArray(payload, payloadSize);
+		result.version = version;
+		result.buffer.setBuffer(&result.data);
+		result.buffer.open(QIODevice::ReadOnly);
+		result.stream.setDevice(&result.buffer);
+		result.stream.setVersion(QDataStream::Qt_5_1);
+		return TdataImportError::None;
+	}
+	return error;
+}
+
+[[nodiscard]] TdataImportError ReadImportEncrypted(
+		EncryptedDescriptor &result,
+		FileReadDescriptor &file,
+		const QString &name,
+		const QString &basePath,
+		qint64 limit,
+		const MTP::AuthKeyPtr &key) {
+	const auto error = ReadImportFile(file, name, basePath, limit);
+	if (error != TdataImportError::None) {
+		return error;
+	}
+	auto encrypted = QByteArray();
+	return (ReadImportBytes(file.stream, encrypted, limit)
+		&& file.stream.atEnd()
+		&& DecryptLocal(result, encrypted, key))
+		? TdataImportError::None
+		: TdataImportError::Corrupt;
+}
+
+[[nodiscard]] QString ImportAccountName(int index) {
+	const auto name = (index > 0)
+		? u"data#"_q + QString::number(index + 1)
+		: u"data"_q;
+	const auto utf8 = name.toUtf8();
+	auto hash = std::array<FileKey, 2>{};
+	hashMd5(utf8.constData(), utf8.size(), hash.data());
+	return ToFilePart(hash[0]);
+}
+
+[[nodiscard]] bool ReadImportAuthorization(
+		ImportedAccount &result,
+		QDataStream &data) {
+	auto type = quint32();
+	auto authorization = QByteArray();
+	data >> type;
+	if (!ReadImportBytes(data, authorization, kImportAuthFileLimit)
+		|| !data.atEnd()
+		|| type != dbiMtpAuthorization) {
+		return false;
+	}
+	auto stream = QDataStream(authorization);
+	stream.setVersion(QDataStream::Qt_5_1);
+	auto first = quint32();
+	auto second = quint32();
+	stream >> first >> second;
+	auto id = quint64(first);
+	auto dc = qint32(second);
+	if (((quint64(first) << 32) | second) == ~quint64(0)) {
+		stream >> id >> dc;
+	}
+	if (stream.status() != QDataStream::Ok
+		|| id > PeerId::kChatTypeMask
+		|| (id && dc <= 0)
+		|| dc > kImportMaxDcId) {
+		return false;
+	}
+	auto keys = QByteArray();
+	auto keyStream = QDataStream(&keys, QIODevice::WriteOnly);
+	keyStream.setVersion(QDataStream::Qt_5_1);
+	auto hasMain = false;
+	for (auto list = 0; list != 2; ++list) {
+		auto count = qint32();
+		stream >> count;
+		if (stream.status() != QDataStream::Ok
+			|| count < 0
+			|| count > kImportMaxKeys
+			|| (!list && id && !count)) {
+			return false;
+		}
+		if (!list) keyStream << count;
+		auto dcs = base::flat_set<qint32>();
+		for (auto i = 0; i != count; ++i) {
+			auto keyDc = qint32();
+			stream >> keyDc;
+			const auto key = Serialize::read<MTP::AuthKey::Data>(stream);
+			if (stream.status() != QDataStream::Ok
+				|| keyDc <= 0
+				|| keyDc > kImportMaxDcId
+				|| !dcs.emplace(keyDc).second
+				|| ranges::all_of(key, [](auto byte) { return byte == gsl::byte{}; })) {
+				return false;
+			}
+			if (!list) {
+				keyStream << keyDc;
+				keyStream.writeRawData(reinterpret_cast<const char*>(key.data()), key.size());
+				hasMain = hasMain || (keyDc == dc);
+			}
+		}
+	}
+	if (stream.status() != QDataStream::Ok || !stream.atEnd() || (id && !hasMain)) {
+		return false;
+	}
+	auto normalized = QDataStream(&result.authorization, QIODevice::WriteOnly);
+	normalized.setVersion(QDataStream::Qt_5_1);
+	normalized << ~quint64(0) << id << dc;
+	normalized.writeRawData(keys.constData(), keys.size());
+	normalized << qint32(0);
+	result.uniqueId = id;
+	return normalized.status() == QDataStream::Ok;
+}
+
+[[nodiscard]] TdataImportError ReadImportAccount(
+		ImportedAccount &result,
+		const QString &basePath,
+		const MTP::AuthKeyPtr &key,
+		EncryptedDescriptor *legacyMap = nullptr,
+		int legacyVersion = 0) {
+	const auto name = ImportAccountName(result.sourceIndex);
+	const auto accountPath = basePath + name + '/';
+	auto auth = EncryptedDescriptor();
+	auto authFile = FileReadDescriptor();
+	const auto error = ReadImportEncrypted(
+		auth, authFile, name, basePath, kImportAuthFileLimit, key);
+	if (error != TdataImportError::None) {
+		return error;
+	} else if (!ReadImportAuthorization(result, auth.stream)) {
+		return TdataImportError::Corrupt;
+	} else if (!result.uniqueId) {
+		return TdataImportError::None;
+	}
+	auto mapFile = FileReadDescriptor();
+	auto map = EncryptedDescriptor();
+	auto mapData = legacyMap;
+	auto mapVersion = legacyVersion;
+	if (!mapData) {
+		const auto mapError = ReadImportFile(
+			mapFile, u"map"_q, accountPath, kImportMapFileLimit);
+		if (mapError != TdataImportError::None && mapError != TdataImportError::NotFound) {
+			return mapError;
+		} else if (mapError == TdataImportError::None) {
+			auto salt = QByteArray();
+			auto oldKey = QByteArray();
+			auto encrypted = QByteArray();
+			if (!ReadImportBytes(mapFile.stream, salt, kImportSaltLimit)
+				|| !ReadImportBytes(mapFile.stream, oldKey, kImportKeyFileLimit)
+				|| !ReadImportBytes(mapFile.stream, encrypted, kImportMapFileLimit)
+				|| !mapFile.stream.atEnd()
+				|| !DecryptLocal(map, encrypted, key)) {
+				return TdataImportError::Corrupt;
+			}
+			mapData = &map;
+			mapVersion = mapFile.version;
+		}
+	}
+	if (mapData && !mapData->stream.atEnd()) {
+		auto type = quint32();
+		mapData->stream >> type;
+		if (mapData->stream.status() != QDataStream::Ok) {
+			return TdataImportError::Corrupt;
+		}
+		if (type == kImportSelfSerialized) {
+			if (!ReadImportBytes(mapData->stream, result.self, kImportSelfLimit)) {
+				return TdataImportError::Corrupt;
+			}
+			auto selfStream = QDataStream(result.self);
+			const auto identity = Serialize::peekUserIdentity(mapVersion, selfStream);
+			auto peerStream = QDataStream(result.self);
+			auto peer = quint64();
+			auto tag = quint64();
+			auto version = qint32();
+			peerStream >> peer >> tag;
+			if (tag == kImportPeerVersionTag) {
+				peerStream >> version;
+			}
+			const auto peerId = DeserializePeerId(peer);
+			if (!identity || !peerIsUser(peerId)
+				|| peerToUser(peerId).bare != result.uniqueId
+				|| version < 0 || version > kImportMaxPeerVersion) {
+				return TdataImportError::Corrupt;
+			}
+			auto username = QString();
+			auto access = quint64();
+			auto flags = qint32();
+			auto placeholder = QString();
+			auto lastseen = quint32();
+			auto contact = qint32();
+			auto botInfo = qint32();
+			auto supportsGuestChat = qint32();
+			auto about = QString();
+			selfStream >> username >> access;
+			if (mapVersion >= 9012) selfStream >> flags;
+			if (mapVersion >= 9016) selfStream >> placeholder;
+			selfStream >> lastseen >> contact >> botInfo;
+			if (version > 2) selfStream >> supportsGuestChat;
+			selfStream >> about;
+			if (selfStream.status() != QDataStream::Ok || !selfStream.atEnd()) {
+				return TdataImportError::Corrupt;
+			}
+			result.displayName = (identity->firstName + ' ' + identity->lastName).trimmed();
+			result.phone = identity->phone;
+			result.selfStreamVersion = mapVersion;
+		}
+	}
+	auto config = EncryptedDescriptor();
+	auto configFile = FileReadDescriptor();
+	const auto configError = ReadImportEncrypted(
+		config, configFile, u"config"_q, accountPath, kImportKeyFileLimit, key);
+	if (configError != TdataImportError::NotFound) {
+		if (configError != TdataImportError::None) {
+			return configError;
+		}
+		auto serialized = QByteArray();
+		if (!ReadImportBytes(config.stream, serialized, kImportKeyFileLimit)) {
+			return TdataImportError::Corrupt;
+		}
+		auto prefix = QDataStream(serialized);
+		prefix.setVersion(QDataStream::Qt_5_1);
+		auto version = qint32();
+		auto environment = qint32();
+		prefix >> version >> environment;
+		if (version > kImportConfigVersion) {
+			return TdataImportError::Unsupported;
+		} else if (config.stream.status() != QDataStream::Ok
+			|| !config.stream.atEnd()
+			|| prefix.status() != QDataStream::Ok
+			|| version != kImportConfigVersion
+			|| (environment != qint32(MTP::Environment::Production)
+				&& environment != qint32(MTP::Environment::Test))) {
+			return TdataImportError::Corrupt;
+		}
+		result.testMode = (environment == qint32(MTP::Environment::Test));
+	}
+	if (result.testMode) {
+		result.uniqueId |= 0x0100'0000'0000'0000ULL;
+	}
+	if (result.displayName.isEmpty()) {
+		result.displayName = result.phone.isEmpty()
+			? u"Account "_q + QString::number(result.sourceIndex + 1)
+			: result.phone;
+	}
+	return TdataImportError::None;
 }
 
 void WriteKeyData(
@@ -320,6 +628,189 @@ void WriteKeyData(
 }
 
 } // namespace
+
+TdataImportResult ReadTdataAccounts(
+		const QString &sourceDirectory,
+		const QByteArray &passcode) {
+	const auto directory = QFileInfo(sourceDirectory);
+	auto folder = directory.canonicalFilePath();
+	const auto fail = [&](TdataImportError error) {
+		return TdataImportResult{ .error = error, .sourceFolder = folder };
+	};
+	if (!directory.isDir() || folder.isEmpty()) {
+		return fail(TdataImportError::NotFound);
+	} else if (passcode.size() > kImportPasscodeLimit) {
+		return fail(TdataImportError::Unsupported);
+	}
+	auto basePath = folder + '/';
+	auto keyFile = FileReadDescriptor();
+	auto mapFile = FileReadDescriptor();
+	auto legacy = false;
+	const auto readHeader = [&] {
+		const auto error = ReadImportFile(
+			keyFile, u"key_data"_q, basePath, kImportKeyFileLimit);
+		legacy = (error == TdataImportError::NotFound);
+		return legacy
+			? ReadImportFile(
+				mapFile,
+				u"map"_q,
+				basePath + ImportAccountName(0) + '/',
+				kImportMapFileLimit)
+			: error;
+	};
+	auto headerError = readHeader();
+	if (headerError == TdataImportError::NotFound) {
+		const auto nested = QFileInfo(basePath + u"tdata"_q);
+		if (nested.isSymLink()) {
+			return fail(TdataImportError::Corrupt);
+		} else if (nested.isDir()) {
+			const auto canonical = nested.canonicalFilePath();
+			if (!canonical.isEmpty()) {
+				folder = canonical;
+				basePath = folder + '/';
+				headerError = readHeader();
+			}
+		}
+	}
+	if (headerError != TdataImportError::None) {
+		return fail(headerError);
+	}
+	auto localKey = MTP::AuthKeyPtr();
+	auto indexes = std::vector<int>();
+	auto legacyMap = EncryptedDescriptor();
+	auto legacyVersion = 0;
+	if (legacy) {
+		auto salt = QByteArray();
+		auto encryptedKey = QByteArray();
+		auto encryptedMap = QByteArray();
+		if (!ReadImportBytes(mapFile.stream, salt, kImportSaltLimit)
+			|| !ReadImportBytes(mapFile.stream, encryptedKey, kImportKeyFileLimit)
+			|| !ReadImportBytes(mapFile.stream, encryptedMap, kImportMapFileLimit)
+			|| !mapFile.stream.atEnd()
+			|| salt.size() != LocalEncryptSaltSize
+			|| encryptedKey.size() != kImportWrappedKeySize) {
+			return fail(TdataImportError::Corrupt);
+		}
+		localKey = UnwrapLocalKey(encryptedKey, CreateLegacyLocalKey(passcode, salt));
+		if (!localKey) {
+			return fail(passcode.isEmpty()
+				? TdataImportError::PasscodeNeeded
+				: TdataImportError::WrongPasscode);
+		} else if (!DecryptLocal(legacyMap, encryptedMap, localKey)) {
+			return fail(TdataImportError::Corrupt);
+		}
+		legacyVersion = mapFile.version;
+		indexes.push_back(0);
+	} else {
+		auto data = KeyData();
+		auto encryptedInfo = QByteArray();
+		const auto parsed = ReadKeyData(keyFile.stream, data, encryptedInfo, true);
+		if (parsed != ReadKeyDataResult::Success) {
+			return fail(parsed == ReadKeyDataResult::UnsupportedKdf
+				? TdataImportError::Unsupported
+				: TdataImportError::Corrupt);
+		}
+		if (data.legacy) {
+			if (data.openKeyEncrypted.size() != kImportWrappedKeySize) {
+				return fail(TdataImportError::Corrupt);
+			}
+			localKey = UnwrapLocalKey(data.openKeyEncrypted, CreateLocalKey(passcode, data.openSalt));
+		} else if (passcode.isEmpty() && !data.openKeyEncrypted.isEmpty()) {
+			if (data.openKeyEncrypted.size() != kImportWrappedKeySize) {
+				return fail(TdataImportError::Corrupt);
+			}
+			localKey = UnwrapLocalKey(data.openKeyEncrypted, CreateLocalKey({}, data.openSalt));
+		} else {
+			const auto live = ranges::count_if(data.passcodeWraps, [&](const auto &wrap) {
+				return wrap.generation == data.committed;
+			});
+			if (passcode.isEmpty() && live == 1) {
+				return fail(TdataImportError::PasscodeNeeded);
+			} else if (live != 1) {
+				return fail(TdataImportError::Corrupt);
+			}
+			const auto i = ranges::find(data.passcodeWraps, data.committed, &PasscodeWrap::generation);
+			const auto &wrap = *i;
+			if (wrap.keyEncrypted.size() != kImportWrappedKeySize || wrap.salt.size() > kImportSaltLimit) {
+				return fail(TdataImportError::Corrupt);
+			} else if (wrap.kdf.kind == kPasscodeKdfScrypt
+				&& (wrap.kdf.memory > kImportMaxScryptN
+					|| wrap.kdf.time > kImportMaxScryptR
+					|| wrap.kdf.parallel > kImportMaxScryptP)) {
+				return fail(TdataImportError::Unsupported);
+			}
+			auto wrapKey = (wrap.kdf.kind == 0)
+				? CreateLocalKey(passcode, wrap.salt)
+				: CreatePasscodeKey(passcode, wrap.salt, wrap.kdf);
+			if (!wrapKey) {
+				return fail(TdataImportError::Unsupported);
+			}
+			localKey = UnwrapLocalKey(wrap.keyEncrypted, wrapKey);
+		}
+		if (!localKey) {
+			return fail(passcode.isEmpty()
+				? TdataImportError::PasscodeNeeded
+				: TdataImportError::WrongPasscode);
+		}
+		auto info = EncryptedDescriptor();
+		if (!DecryptLocal(info, encryptedInfo, localKey)) {
+			return fail(TdataImportError::Corrupt);
+		}
+		auto count = qint32();
+		info.stream >> count;
+		if (info.stream.status() != QDataStream::Ok
+			|| count <= 0
+			|| count > Main::Domain::kLocalMaxAccounts) {
+			return fail(TdataImportError::Corrupt);
+		}
+		auto seen = base::flat_set<int>();
+		for (auto i = 0; i != count; ++i) {
+			auto index = qint32();
+			info.stream >> index;
+			if (info.stream.status() != QDataStream::Ok
+				|| index < 0
+				|| index >= Main::Domain::kLocalMaxAccounts
+				|| !seen.emplace(index).second) {
+				return fail(TdataImportError::Corrupt);
+			}
+			indexes.push_back(index);
+		}
+		if (!info.stream.atEnd()) {
+			auto selected = qint32();
+			info.stream >> selected;
+			if (!seen.contains(selected)) {
+				return fail(TdataImportError::Corrupt);
+			}
+		}
+		if (info.stream.status() != QDataStream::Ok || !info.stream.atEnd()) {
+			return fail(TdataImportError::Corrupt);
+		}
+	}
+	auto result = TdataImportResult{ .sourceFolder = folder };
+	result.accounts.reserve(indexes.size());
+	auto total = qsizetype();
+	for (const auto index : indexes) {
+		auto account = ImportedAccount{ .sourceIndex = index };
+		const auto error = ReadImportAccount(
+			account,
+			basePath,
+			localKey,
+			legacy ? &legacyMap : nullptr,
+			legacyVersion);
+		if (error == TdataImportError::NotFound && !legacy) {
+			continue;
+		} else if (error != TdataImportError::None) {
+			return fail(error);
+		} else if (account.uniqueId) {
+			total += account.authorization.size() + account.self.size();
+			if (total > kImportAggregateLimit) {
+				return fail(TdataImportError::Unsupported);
+			}
+			result.accounts.push_back(std::move(account));
+		}
+	}
+	return result.accounts.empty() ? fail(TdataImportError::NotFound) : std::move(result);
+}
 
 PasscodeVerification::PasscodeVerification(quint64 nonce)
 : _nonce(nonce) {
@@ -699,54 +1190,67 @@ Domain::StartModernResult Domain::startModern(
 	LOG(("App Info: reading encrypted info..."));
 	auto count = qint32();
 	info.stream >> count;
-	if (count <= 0 || count > Main::Domain::kPremiumMaxAccounts) {
+	if (count <= 0 || count > Main::Domain::kLocalMaxAccounts) {
 		LOG(("App Error: bad accounts count: %1").arg(count));
 		return StartModernResult::Failed;
 	}
 
 	_oldVersion = file.version;
 
+	auto indexes = std::vector<int>();
+	indexes.reserve(count);
 	auto tried = base::flat_set<int>();
-	auto sessions = base::flat_set<uint64>();
-	auto active = 0;
 	for (auto i = 0; i != count; ++i) {
 		auto index = qint32();
 		info.stream >> index;
-		if (index >= 0
-			&& index < Main::Domain::kPremiumMaxAccounts
-			&& tried.emplace(index).second) {
-			auto account = std::make_unique<Main::Account>(
-				_owner,
-				_dataName,
-				index);
-			auto config = account->prepareToStart(_localKey);
-			const auto sessionId = account->willHaveSessionUniqueId(
-				config.get());
-			if (!sessions.contains(sessionId)
-				&& (sessionId != 0 || (sessions.empty() && i + 1 == count))) {
-				if (sessions.empty()) {
-					active = index;
-				}
-				account->start(std::move(config));
-				_owner->accountAddedInStorage({
-					.index = index,
-					.account = std::move(account)
-				});
-				sessions.emplace(sessionId);
-			}
+		if (!CheckStreamStatus(info.stream)
+			|| index < 0
+			|| index >= Main::Domain::kLocalMaxAccounts
+			|| !tried.emplace(index).second) {
+			return StartModernResult::Failed;
 		}
+		indexes.push_back(index);
 	}
-	if (sessions.empty()) {
-		LOG(("App Error: no accounts read."));
-		return StartModernResult::Failed;
-	}
-
+	auto active = indexes.front();
 	if (info.stream.device()->bytesAvailable() >= qint64(sizeof(qint32))) {
 		info.stream >> active;
 	}
+	if (!CheckStreamStatus(info.stream)) {
+		return StartModernResult::Failed;
+	}
+	if (!ranges::contains(indexes, active)) {
+		active = indexes.front();
+	}
+	auto summaries = std::vector<Main::StoredAccount>();
+	summaries.reserve(indexes.size());
+	for (const auto index : indexes) {
+		auto account = Main::Account(_owner, _dataName, index);
+		summaries.push_back(account.local().readStoredAccount(_localKey, index));
+	}
+	const auto authenticated = ranges::find_if(summaries, [](const Main::StoredAccount &account) {
+		return account.uniqueId != 0;
+	});
+	if (authenticated != end(summaries)) {
+		const auto selected = ranges::find(summaries, active, &Main::StoredAccount::index);
+		if (selected == end(summaries) || !selected->uniqueId) {
+			active = authenticated->index;
+		}
+		summaries.erase(std::remove_if(begin(summaries), end(summaries), [](const Main::StoredAccount &account) {
+			return account.authorizationKnown && !account.uniqueId;
+		}), end(summaries));
+	}
+	for (auto &summary : summaries) {
+		_owner->storedAccountAdded(std::move(summary));
+	}
+	auto account = std::make_unique<Main::Account>(_owner, _dataName, active);
+	account->start(account->prepareToStart(_localKey));
+	_owner->accountAddedInStorage({
+		.index = active,
+		.account = std::move(account),
+	});
+
 	_owner->activateFromStorage(active);
 
-	Ensures(!sessions.empty());
 	return StartModernResult::Success;
 }
 
@@ -760,16 +1264,25 @@ void Domain::writeAccounts() {
 	_keyDataDirty = false;
 }
 
+void Domain::startStored(not_null<Main::Account*> account) {
+	Expects(_localKey != nullptr);
+	account->start(account->prepareToStart(_localKey));
+}
+
+bool Domain::writeAccountsChecked() {
+	return writeKeyData(*_keyData, true);
+}
+
 QByteArray Domain::prepareAccountsInfo() const {
 	Expects(_localKey != nullptr);
 
-	const auto &list = _owner->accounts();
+	const auto list = _owner->storedAccounts();
 	auto keySize = sizeof(qint32) + sizeof(qint32) * list.size();
 
 	EncryptedDescriptor info(keySize);
 	info.stream << qint32(list.size());
-	for (const auto &[index, account] : list) {
-		info.stream << qint32(index);
+	for (const auto &account : list) {
+		info.stream << qint32(account.index);
 	}
 	info.stream << qint32(_owner->activeForStorage());
 	return PrepareEncrypted(info, _localKey);

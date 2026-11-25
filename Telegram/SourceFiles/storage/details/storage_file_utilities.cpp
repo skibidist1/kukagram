@@ -72,11 +72,18 @@ struct WriteEntry {
 	QString base;
 	QByteArray data;
 	QByteArray md5;
+	RetryWrite retry = RetryWrite::None;
+};
+
+struct PendingWrites {
+	std::map<QString, WriteEntry> records;
+	std::optional<WriteEntry> index;
 };
 
 struct RemoveEntry {
 	std::vector<QString> files;
 	QString folder;
+	QString replacedIndexFolder;
 };
 
 using WriteOperation = std::variant<WriteEntry, RemoveEntry>;
@@ -89,13 +96,15 @@ public:
 	void write(WriteEntry &&entry);
 	[[nodiscard]] bool writeSync(WriteEntry &&entry);
 	void remove(RemoveEntry &&entry);
-	void writeSyncAll();
+	bool writeSyncAll(const QString &basePath);
 
 private:
 	void scheduleWrite();
 	void writeScheduled();
 	bool writeOneScheduledNow();
-	bool writeNow(WriteEntry &&entry);
+	bool writeNow(const WriteEntry &entry);
+	bool retry(PendingWrites &pending);
+	void forgetRemovedWrites(const RemoveEntry &entry);
 	void removeNow(const RemoveEntry &entry);
 
 	[[nodiscard]] WriteQueue::iterator segment();
@@ -111,6 +120,7 @@ private:
 
 	crl::weak_on_thread<WriteManager> _weak;
 	WriteQueue _scheduled;
+	std::map<QString, PendingWrites> _pending;
 
 };
 
@@ -119,7 +129,7 @@ public:
 	void write(WriteEntry &&entry);
 	[[nodiscard]] bool writeSync(WriteEntry &&entry);
 	void remove(RemoveEntry &&entry);
-	void sync();
+	bool sync(const QString &basePath = QString());
 	void stop();
 
 private:
@@ -157,6 +167,10 @@ void WriteManager::write(WriteEntry &&entry) {
 	const auto i = scheduled(entry.base);
 	if (i == end(_scheduled)) {
 		_scheduled.push_back(std::move(entry));
+	} else if (entry.retry == RetryWrite::Index) {
+		// This snapshot may reference records queued after the earlier index.
+		_scheduled.erase(i);
+		_scheduled.push_back(std::move(entry));
 	} else {
 		*i = std::move(entry);
 	}
@@ -179,7 +193,7 @@ void WriteManager::remove(RemoveEntry &&entry) {
 	scheduleWrite();
 }
 
-bool WriteManager::writeNow(WriteEntry &&entry) {
+bool WriteManager::writeNow(const WriteEntry &entry) {
 	const auto path = [&](char postfix) {
 		return this->path(entry, postfix);
 	};
@@ -248,8 +262,73 @@ bool WriteManager::writeNow(WriteEntry &&entry) {
 #endif
 }
 
-void WriteManager::writeSyncAll() {
+bool WriteManager::writeSyncAll(const QString &basePath) {
 	while (writeOneScheduledNow()) {
+	}
+	if (!basePath.isEmpty()) {
+		const auto i = _pending.find(basePath);
+		if (i == _pending.end()) {
+			return true;
+		} else if (!retry(i->second)) {
+			return false;
+		}
+		_pending.erase(i);
+		return true;
+	}
+	for (auto i = _pending.begin(); i != _pending.end();) {
+		if (retry(i->second)) {
+			i = _pending.erase(i);
+		} else {
+			++i;
+		}
+	}
+	return _pending.empty();
+}
+
+bool WriteManager::retry(PendingWrites &pending) {
+	while (!pending.records.empty()) {
+		const auto first = pending.records.begin();
+		if (!writeNow(first->second)) {
+			return false;
+		}
+		pending.records.erase(first);
+	}
+	return !pending.index || writeNow(*pending.index);
+}
+
+void WriteManager::forgetRemovedWrites(const RemoveEntry &entry) {
+	if (!entry.folder.isEmpty()) {
+		const auto prefix = QDir::cleanPath(entry.folder) + QChar('/');
+		std::erase_if(_pending, [&](const auto &item) {
+			return item.first.startsWith(prefix);
+		});
+	}
+	if (!entry.replacedIndexFolder.isEmpty()) {
+		// The current snapshot includes data that the caller is removing.
+		// The replacement may be coalesced behind writes for later records.
+		const auto i = _pending.find(entry.replacedIndexFolder);
+		if (i != _pending.end()) {
+			i->second.index.reset();
+			if (i->second.records.empty()) {
+				_pending.erase(i);
+			}
+		}
+	}
+	for (const auto &file : entry.files) {
+		if (!file.endsWith(QChar('s'))) {
+			continue;
+		}
+		const auto folder = file.left(file.lastIndexOf(QChar('/')) + 1);
+		const auto i = _pending.find(folder);
+		if (i != _pending.end()) {
+			i->second.records.erase(file.chopped(1));
+			if (i->second.index && i->second.index->base == file.chopped(1)) {
+				i->second.index.reset();
+			}
+			if (i->second.records.empty() && !i->second.index) {
+				_pending.erase(i);
+			}
+		}
 	}
 }
 
@@ -262,8 +341,23 @@ bool WriteManager::writeOneScheduledNow() {
 	_scheduled.pop_front();
 
 	v::match(operation, [&](WriteEntry &entry) {
-		writeNow(std::move(entry));
+		if (entry.retry == RetryWrite::None) {
+			writeNow(entry);
+			return;
+		}
+		const auto i = _pending.try_emplace(entry.basePath).first;
+		auto &pending = i->second;
+		if (entry.retry == RetryWrite::Index) {
+			pending.index = std::move(entry);
+		} else {
+			const auto base = entry.base;
+			pending.records.insert_or_assign(base, std::move(entry));
+		}
+		if (retry(pending)) {
+			_pending.erase(i);
+		}
 	}, [&](const RemoveEntry &entry) {
+		forgetRemovedWrites(entry);
 		removeNow(entry);
 	});
 	return true;
@@ -364,17 +458,21 @@ void AsyncWriteManager::remove(RemoveEntry &&entry) {
 	});
 }
 
-void AsyncWriteManager::sync() {
+bool AsyncWriteManager::sync(const QString &basePath) {
+	auto result = true;
 	if (_manager) {
-		_manager->with_sync([](WriteManager &manager) {
-			manager.writeSyncAll();
+		_manager->with_sync([&](WriteManager &manager) {
+			result = manager.writeSyncAll(basePath);
 		});
 	}
+	return result;
 }
 
 void AsyncWriteManager::stop() {
 	if (_manager) {
-		sync();
+		if (!sync()) {
+			LOG(("Storage Error: Widget data could not be saved before shutdown."));
+		}
 		_manager.reset();
 	}
 	_finished = true;
@@ -704,7 +802,7 @@ void FileWriteDescriptor::writeEncrypted(
 	writeData(PrepareEncrypted(data, key));
 }
 
-bool FileWriteDescriptor::finish() {
+bool FileWriteDescriptor::finish(RetryWrite retry) {
 	if (!_stream.device()) {
 		return _result;
 	}
@@ -721,7 +819,8 @@ bool FileWriteDescriptor::finish() {
 		.basePath = _basePath,
 		.base = _base,
 		.data = _safeData,
-		.md5 = QByteArray((const char*)_md5.result(), 0x10)
+		.md5 = QByteArray((const char*)_md5.result(), 0x10),
+		.retry = retry,
 	};
 	if (_sync) {
 		_result = Manager.writeSync(std::move(entry));
@@ -755,7 +854,8 @@ bool FileWriteDescriptor::finish() {
 bool ReadFile(
 		FileReadDescriptor &result,
 		const QString &name,
-		const QString &basePath) {
+		const QString &basePath,
+		bool removeRedundant) {
 	const auto base = basePath + name;
 
 	// detect order of read attempts
@@ -854,7 +954,7 @@ bool ReadFile(
 		result.stream.setDevice(&result.buffer);
 		result.stream.setVersion(QDataStream::Qt_5_1);
 
-		if ((i == 0 && !toTry[1].isEmpty()) || i == 1) {
+		if (removeRedundant && ((i == 0 && !toTry[1].isEmpty()) || i == 1)) {
 			QFile::remove(toTry[1 - i]);
 		}
 
@@ -906,8 +1006,9 @@ bool ReadEncryptedFile(
 		FileReadDescriptor &result,
 		const QString &name,
 		const QString &basePath,
-		const MTP::AuthKeyPtr &key) {
-	if (!ReadFile(result, name, basePath)) {
+		const MTP::AuthKeyPtr &key,
+		bool removeRedundant) {
+	if (!ReadFile(result, name, basePath, removeRedundant)) {
 		return false;
 	}
 	QByteArray encrypted;
@@ -942,13 +1043,19 @@ bool ReadEncryptedFile(
 		FileReadDescriptor &result,
 		const FileKey &fkey,
 		const QString &basePath,
-		const MTP::AuthKeyPtr &key) {
-	return ReadEncryptedFile(result, ToFilePart(fkey), basePath, key);
+		const MTP::AuthKeyPtr &key,
+		bool removeRedundant) {
+	return ReadEncryptedFile(result, ToFilePart(fkey), basePath, key, removeRedundant);
 }
 
-void ScheduleRemoveFiles(std::vector<QString> paths) {
-	if (!paths.empty()) {
-		Manager.remove({ .files = std::move(paths) });
+void ScheduleRemoveFiles(
+		std::vector<QString> paths,
+		const QString &replacedIndexFolder) {
+	if (!paths.empty() || !replacedIndexFolder.isEmpty()) {
+		Manager.remove({
+			.files = std::move(paths),
+			.replacedIndexFolder = replacedIndexFolder,
+		});
 	}
 }
 
@@ -960,6 +1067,10 @@ void ScheduleRemoveFolder(const QString &path) {
 
 void Sync() {
 	Manager.sync();
+}
+
+bool SyncWritesFor(const QString &basePath) {
+	return Manager.sync(basePath);
 }
 
 void Finish() {

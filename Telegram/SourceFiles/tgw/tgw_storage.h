@@ -41,6 +41,7 @@ struct HeightRecord {
 };
 
 void StartStorage(not_null<Main::Session*> session);
+[[nodiscard]] bool CheckpointStorage(not_null<Main::Session*> session);
 
 [[nodiscard]] twidget::WidgetStorage StoredAreas(
 	not_null<HistoryItem*> item);

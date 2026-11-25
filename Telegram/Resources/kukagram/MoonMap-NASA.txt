@@ -1,0 +1,12 @@
+Lunar surface color map from CGI Moon Kit
+Credit: NASA's Scientific Visualization Studio
+Visualizer: Ernie Wright (STC)
+Scientist: Noah Petro (NASA/GSFC)
+Source measurements: Lunar Reconnaissance Orbiter Camera and Laser Altimeter
+
+The bundled file is the original 2048 × 1024 color map from:
+https://svs.gsfc.nasa.gov/4720/
+https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/lroc_color_2k.jpg
+
+NASA media usage guidelines:
+https://www.nasa.gov/nasa-brand-center/images-and-media/

@@ -114,6 +114,36 @@ base::options::toggle HideReplyButtonOption({
 	.description = "Hide reply button in notifications.",
 });
 
+[[nodiscard]] bool AccountNotificationsEnabled(not_null<Main::Session*> session) {
+	const auto &domain = Core::App().domain();
+	return !Core::Quitting()
+		&& (domain.notificationAllowlistConfigured()
+			? domain.notificationsAllowed(session->uniqueId())
+			: (Core::App().settings().notifyFromAll()
+				|| Core::App().maybePrimarySession() == session.get()));
+}
+
+[[nodiscard]] bool SameNotificationGroup(
+		not_null<HistoryItem*> previous,
+		not_null<HistoryItem*> next) {
+	if (previous->history() != next->history()
+		|| previous->topicRootId() != next->topicRootId()
+		|| previous->sublistPeerId() != next->sublistPeerId()
+		|| std::abs(int64(previous->date()) - int64(next->date())) >= 2) {
+		return false;
+	}
+	if (previous->groupId() || next->groupId()) {
+		return previous->groupId() == next->groupId();
+	}
+	return previous->Has<HistoryMessageForwarded>()
+		&& next->Has<HistoryMessageForwarded>()
+		&& previous->author() == next->author();
+}
+
+[[nodiscard]] bool IncomingMessage(not_null<HistoryItem*> item) {
+	return !item->out();
+}
+
 [[nodiscard]] QString PlaceholderReactionText() {
 	static const auto result = QString::fromUtf8("\xf0\x9f\x92\xad");
 	return result;
@@ -358,13 +388,7 @@ System::SkipState System::computeSkipState(
 	const auto notifyBy = messageType
 		? item->specialNotificationPeer()
 		: notification.reactionOrVoteSender;
-	if (Core::Quitting()
-		|| !Core::App().domain().notificationsAllowed(
-			thread->session().uniqueId())) {
-		return { SkipState::Skip };
-	} else if (!Core::App().domain().notificationAllowlistConfigured()
-		&& !Core::App().settings().notifyFromAll()
-		&& &thread->session().account() != &Core::App().domain().active()) {
+	if (!AccountNotificationsEnabled(&thread->session())) {
 		return { SkipState::Skip };
 	}
 
@@ -508,11 +532,7 @@ void System::schedule(Data::ItemNotification notification) {
 
 void System::clearAll() {
 	_waitTimer.cancel();
-	_waitForAllGroupedTimer.cancel();
-	_lastForwardedCount = 0;
-	_lastHistorySessionId = 0;
-	_lastHistoryItemId = FullMsgId();
-	_lastSoundId = {};
+	clearGrouped();
 	if (_manager) {
 		_manager->clearAll();
 	}
@@ -530,6 +550,7 @@ void System::clearAll() {
 }
 
 void System::clearFromTopic(not_null<Data::ForumTopic*> topic) {
+	clearGroupedFrom(topic);
 	if (_manager) {
 		_manager->clearFromTopic(topic);
 	}
@@ -548,6 +569,7 @@ void System::clearFromTopic(not_null<Data::ForumTopic*> topic) {
 }
 
 void System::clearFromSublist(not_null<Data::SavedSublist*> sublist) {
+	clearGroupedFrom(sublist);
 	if (_manager) {
 		_manager->clearFromSublist(sublist);
 	}
@@ -608,6 +630,7 @@ void System::clearForThreadIf(Fn<bool(not_null<Data::Thread*>)> predicate) {
 }
 
 void System::clearFromHistory(not_null<History*> history) {
+	clearGroupedFrom(history);
 	if (_manager) {
 		_manager->clearFromHistory(history);
 	}
@@ -617,6 +640,9 @@ void System::clearFromHistory(not_null<History*> history) {
 }
 
 void System::clearFromSession(not_null<Main::Session*> session) {
+	if (_lastHistorySessionId == session->uniqueId()) {
+		clearGrouped();
+	}
 	if (_manager) {
 		_manager->clearFromSession(session);
 	}
@@ -626,6 +652,7 @@ void System::clearFromSession(not_null<Main::Session*> session) {
 }
 
 void System::clearIncomingFromHistory(not_null<History*> history) {
+	clearGroupedFrom(history, IncomingMessage);
 	if (_manager) {
 		_manager->clearFromHistory(history);
 	}
@@ -635,6 +662,7 @@ void System::clearIncomingFromHistory(not_null<History*> history) {
 }
 
 void System::clearIncomingFromTopic(not_null<Data::ForumTopic*> topic) {
+	clearGroupedFrom(topic, IncomingMessage);
 	if (_manager) {
 		_manager->clearFromTopic(topic);
 	}
@@ -645,6 +673,7 @@ void System::clearIncomingFromTopic(not_null<Data::ForumTopic*> topic) {
 
 void System::clearIncomingFromSublist(
 		not_null<Data::SavedSublist*> sublist) {
+	clearGroupedFrom(sublist, IncomingMessage);
 	if (_manager) {
 		_manager->clearFromSublist(sublist);
 	}
@@ -675,6 +704,9 @@ void System::clearReadFromSublist(
 void System::clearReadIncoming(
 		not_null<Data::Thread*> thread,
 		Fn<bool(not_null<HistoryItem*>)> read) {
+	clearGroupedFrom(thread, [&](not_null<HistoryItem*> item) {
+		return !item->out() && read(item);
+	});
 	thread->clearIncomingNotifications(read);
 	const auto owner = &thread->owner();
 	const auto peerId = thread->peer()->id;
@@ -734,6 +766,10 @@ void System::rememberShownIncoming(
 }
 
 void System::clearFromItem(not_null<HistoryItem*> item) {
+	if (_lastHistoryItemId == item->fullId()
+		&& _lastHistorySessionId == item->history()->session().uniqueId()) {
+		clearGrouped();
+	}
 	if (_manager) {
 		_manager->clearFromItem(item);
 	}
@@ -741,11 +777,7 @@ void System::clearFromItem(not_null<HistoryItem*> item) {
 
 void System::clearAllFast() {
 	_waitTimer.cancel();
-	_waitForAllGroupedTimer.cancel();
-	_lastForwardedCount = 0;
-	_lastHistorySessionId = 0;
-	_lastHistoryItemId = FullMsgId();
-	_lastSoundId = {};
+	clearGrouped();
 	if (_manager) {
 		_manager->clearAllFast();
 	}
@@ -796,26 +828,56 @@ void System::checkDelayed() {
 void System::showGrouped() {
 	Expects(_manager != nullptr);
 
-	if (const auto session = findSession(_lastHistorySessionId);
-		session && Core::App().domain().notificationsAllowed(
-			session->uniqueId())) {
-		if (const auto lastItem = session->data().message(_lastHistoryItemId)) {
-			_waitForAllGroupedTimer.cancel();
+	if (!_lastHistoryItemId) {
+		return;
+	}
+	const auto sessionId = _lastHistorySessionId;
+	const auto itemId = _lastHistoryItemId;
+	const auto forwardedCount = _lastForwardedCount;
+	const auto soundId = _lastSoundId;
+	clearGrouped();
+	if (const auto session = findSession(sessionId);
+		session && AccountNotificationsEnabled(session)) {
+		if (const auto lastItem = session->data().message(itemId)) {
 			const auto thread = lastItem->maybeNotificationThread();
-			// A summary of several forwards may span threads, so skip it.
-			if (thread && _lastForwardedCount < 2) {
+			// Remember only individual messages for per-item dismissal.
+			if (thread && forwardedCount < 2) {
 				rememberShownIncoming(thread, lastItem);
 			}
 			_manager->showNotification({
 				.item = lastItem,
-				.forwardedCount = _lastForwardedCount,
-				.soundId = _lastSoundId,
+				.forwardedCount = forwardedCount,
+				.soundId = soundId,
 			});
-			_lastForwardedCount = 0;
-			_lastHistoryItemId = FullMsgId();
-			_lastHistorySessionId = 0;
-			_lastSoundId = {};
 		}
+	}
+}
+
+void System::clearGrouped() {
+	_waitForAllGroupedTimer.cancel();
+	_lastForwardedCount = 0;
+	_lastHistorySessionId = 0;
+	_lastHistoryItemId = FullMsgId();
+	_lastSoundId = {};
+}
+
+void System::clearGroupedFrom(
+		not_null<Data::Thread*> thread,
+		Fn<bool(not_null<HistoryItem*>)> filter) {
+	if (!_lastHistoryItemId
+		|| _lastHistorySessionId != thread->session().uniqueId()) {
+		return;
+	}
+	const auto item = thread->session().data().message(_lastHistoryItemId);
+	if (!item) {
+		clearGrouped();
+	} else if (item->history() == thread->owningHistory()
+		&& (!thread->asTopic()
+			|| thread->topicRootId() == item->topicRootId())
+		&& (!thread->asSublist()
+			|| thread->asSublist()->sublistPeer()->id == item->sublistPeerId())
+		&& (!filter || filter(item))) {
+		clearGrouped();
 	}
 }
 
@@ -835,22 +897,17 @@ void System::showNext() {
 		}
 		const auto lastItem = item->history()->owner().message(
 			_lastHistoryItemId);
-		if (lastItem) {
-			return (lastItem->groupId() == item->groupId())
-				|| (lastItem->author() == item->author());
-		}
-		return false;
+		return lastItem && SameNotificationGroup(lastItem, item);
 	};
 	auto ms = crl::now(), nextAlert = crl::time(0);
 	auto alertThread = (Data::Thread*)nullptr;
-	auto alertSoundId = std::optional<DocumentId>();
 	for (auto i = _whenAlerts.begin(); i != _whenAlerts.end();) {
 		while (!i->second.empty() && i->second.begin()->first <= ms) {
 			const auto thread = i->first;
 			const auto from = i->second.begin()->second.notifyBy;
-			if (const auto soundId = MaybeSoundFor(thread, from)) {
+			if (AccountNotificationsEnabled(&thread->session())
+				&& MaybeSoundFor(thread, from)) {
 				alertThread = thread;
-				alertSoundId = soundId;
 			}
 			while (!i->second.empty()
 				&& i->second.begin()->first <= ms + kMinimalAlertDelay) {
@@ -867,8 +924,7 @@ void System::showNext() {
 		}
 	}
 	const auto &settings = Core::App().settings();
-	if (alertThread && Core::App().domain().notificationsAllowed(
-			alertThread->session().uniqueId())) {
+	if (alertThread) {
 		if (settings.flashBounceNotify()) {
 			const auto peer = alertThread->peer();
 			if (const auto window = Core::App().windowFor(peer)) {
@@ -895,6 +951,9 @@ void System::showNext() {
 					Data::DefaultNotifyType(alertThread->peer()));
 			}
 			_manager->maybePlaySound(crl::guard(&owner->session(), [=] {
+				if (!AccountNotificationsEnabled(&owner->session())) {
+					return;
+				}
 				const auto track = lookupSound(owner, id);
 				track->playOnce(volume ? volume * 0.01 : 0);
 				Media::Player::mixer()->suppressAll(track->getLengthMs());
@@ -918,6 +977,12 @@ void System::showNext() {
 		auto notifyThread = (Data::Thread*)nullptr;
 		for (auto i = _waiters.begin(); i != _waiters.end();) {
 			const auto thread = i->first;
+			if (!AccountNotificationsEnabled(&thread->session())) {
+				thread->clearNotifications();
+				_whenMaps.remove(thread);
+				i = _waiters.erase(i);
+				continue;
+			}
 			auto current = thread->currentNotification();
 			if (current && current->item->id != i->second.key.messageId) {
 				auto j = _whenMaps.find(thread);
@@ -1010,28 +1075,13 @@ void System::showNext() {
 				const auto nextMessageNotification
 					= (nextNotify->type
 						== Data::ItemNotificationType::Message);
-				const auto canNextBeGrouped = nextMessageNotification
-					&& ((isForwarded
-						&& nextNotify->item->Has<HistoryMessageForwarded>())
-						|| (isAlbum && nextNotify->item->groupId()));
-				const auto nextItem = canNextBeGrouped
-					? nextNotify->item.get()
-					: nullptr;
-				if (nextItem
-					&& std::abs(int64(nextItem->date())
-						- int64(groupedItem->date()))
-						< 2) {
-					if (isForwarded
-						&& groupedItem->author() == nextItem->author()) {
+				if (nextMessageNotification
+					&& SameNotificationGroup(groupedItem, nextNotify->item)) {
+					if (nextNotify->item->Has<HistoryMessageForwarded>()) {
 						++forwardedCount;
-						groupedItem = nextItem;
-						continue;
 					}
-					if (isAlbum
-						&& groupedItem->groupId() == nextItem->groupId()) {
-						groupedItem = nextItem;
-						continue;
-					}
+					groupedItem = nextNotify->item.get();
+					continue;
 				}
 				break;
 			}
@@ -1202,9 +1252,7 @@ void System::playSound(
 		not_null<Main::Session*> session,
 		DocumentId id,
 		float64 volumeOverride) {
-	if (Core::App().domain().notificationsAllowed(session->uniqueId())) {
-		lookupSound(&session->data(), id)->playOnce(volumeOverride);
-	}
+	lookupSound(&session->data(), id)->playOnce(volumeOverride);
 }
 
 Manager::DisplayOptions Manager::getNotificationOptions(

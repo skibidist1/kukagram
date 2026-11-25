@@ -219,12 +219,12 @@ bool StorageDisk::write(
 	if (attach) {
 		entry.file = generateFile();
 	}
+	if (entry.file) {
+		writeRecord(entry.file, local);
+	}
 	if (changed) {
 		entry.meta = meta;
 		writeIndex();
-	}
-	if (entry.file) {
-		writeRecord(entry.file, local);
 	}
 	return changed;
 }
@@ -432,6 +432,7 @@ void StorageDisk::writeIndex() {
 	}
 	auto file = FileWriteDescriptor(kIndexName, _folder);
 	file.writeEncrypted(data, _key);
+	file.finish(RetryWrite::Index);
 }
 
 void StorageDisk::writeRecord(Storage::FileKey file, const Area &local) {
@@ -448,6 +449,7 @@ void StorageDisk::writeRecord(Storage::FileKey file, const Area &local) {
 	}
 	auto descriptor = FileWriteDescriptor(file, _folder);
 	descriptor.writeEncrypted(data, _key);
+	descriptor.finish(RetryWrite::Record);
 }
 
 Storage::FileKey StorageDisk::generateFile() const {

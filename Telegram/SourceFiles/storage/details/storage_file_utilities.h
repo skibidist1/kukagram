@@ -72,6 +72,8 @@ struct EncryptedDescriptor final {
 	EncryptedDescriptor &data,
 	const MTP::AuthKeyPtr &key);
 
+enum class RetryWrite { None, Record, Index };
+
 class FileWriteDescriptor final {
 public:
 	FileWriteDescriptor(
@@ -93,7 +95,7 @@ public:
 	// record durably reached disk, async writes are fire-and-forget and
 	// report true. Idempotent - a repeated call (as from the destructor)
 	// returns the remembered result.
-	bool finish();
+	bool finish(RetryWrite retry = RetryWrite::None);
 
 private:
 	void init(const QString &name);
@@ -113,7 +115,8 @@ private:
 bool ReadFile(
 	FileReadDescriptor &result,
 	const QString &name,
-	const QString &basePath);
+	const QString &basePath,
+	bool removeRedundant = true);
 
 bool DecryptLocal(
 	EncryptedDescriptor &result,
@@ -124,13 +127,15 @@ bool ReadEncryptedFile(
 	FileReadDescriptor &result,
 	const QString &name,
 	const QString &basePath,
-	const MTP::AuthKeyPtr &key);
+	const MTP::AuthKeyPtr &key,
+	bool removeRedundant = true);
 
 bool ReadEncryptedFile(
 	FileReadDescriptor &result,
 	const FileKey &fkey,
 	const QString &basePath,
-	const MTP::AuthKeyPtr &key);
+	const MTP::AuthKeyPtr &key,
+	bool removeRedundant = true);
 
 void ScheduleRemoveFiles(
 	std::vector<QString> paths,
@@ -138,6 +143,7 @@ void ScheduleRemoveFiles(
 void ScheduleRemoveFolder(const QString &path);
 
 void Sync();
+[[nodiscard]] bool SyncWritesFor(const QString &basePath);
 void Finish();
 
 } // namespace details

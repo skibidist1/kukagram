@@ -255,10 +255,12 @@ public:
 
 	void updateIcon();
 	void setMenuProvider(Fn<QMenu*(bool rightButton)> provider);
+	void dismissMenu();
 	void deactivateButton();
 
 	[[nodiscard]] rpl::producer<> activateRequests() const;
 	[[nodiscard]] rpl::producer<> aboutToShowRequests() const;
+	[[nodiscard]] rpl::producer<> menuClosed() const;
 
 private:
 	void prepareMenuForClick(bool rightButton);
@@ -269,6 +271,7 @@ private:
 	Fn<QMenu*(bool rightButton)> _menuProvider;
 
 	rpl::event_stream<> _activateRequests;
+	rpl::event_stream<> _menuClosed;
 
 	rpl::lifetime _lifetime;
 
@@ -290,6 +293,7 @@ NativeIcon::NativeIcon()
 
 	[_delegate closes] | rpl::on_next([=] {
 		_status.menu = nil;
+		_menuClosed.fire({});
 	}, _lifetime);
 
 	[_delegate appearanceChanges] | rpl::on_next([=] {
@@ -370,6 +374,11 @@ void NativeIcon::deactivateButton() {
 	[_status.button highlight:false];
 }
 
+void NativeIcon::dismissMenu() {
+	[_status.menu cancelTrackingWithoutAnimation];
+	_status.menu = nil;
+}
+
 rpl::producer<> NativeIcon::activateRequests() const {
 	return _activateRequests.events();
 }
@@ -377,6 +386,15 @@ rpl::producer<> NativeIcon::activateRequests() const {
 rpl::producer<> NativeIcon::aboutToShowRequests() const {
 	return [_delegate aboutToShowRequests];
 }
+
+rpl::producer<> NativeIcon::menuClosed() const {
+	return _menuClosed.events();
+}
+
+struct Tray::MenuContents {
+	base::unique_qptr<QMenu> widget = base::make_unique_q<QMenu>(nullptr);
+	rpl::lifetime actions;
+};
 
 Tray::Tray() {
 }
@@ -387,22 +405,29 @@ void Tray::createIcon() {
 		// On macOS we are activating the window on click
 		// instead of showing the menu, when the window is not activated.
 		_nativeIcon->setMenuProvider([=](bool rightButton) -> QMenu* {
-			return (_menu && (rightButton || IsAnyActiveForTrayMenu()))
-				? _menu.get()
-				: nullptr;
+			if (!_menuBuilder || (!rightButton && !IsAnyActiveForTrayMenu())) {
+				return nullptr;
+			}
+			_menuBuilder();
+			return _menu ? _menu->widget.get() : nullptr;
 		});
 		_nativeIcon->activateRequests(
 		) | rpl::on_next([=] {
 			_nativeIcon->deactivateButton();
 			_showFromTrayRequests.fire({});
-		}, _lifetime);
+		}, _iconLifetime);
 		_nativeIcon->aboutToShowRequests(
-		) | rpl::start_to_stream(_aboutToShowRequests, _lifetime);
+		) | rpl::start_to_stream(_aboutToShowRequests, _iconLifetime);
+		_nativeIcon->menuClosed() | rpl::on_next([=] {
+			destroyMenu();
+		}, _iconLifetime);
 	}
 	updateIcon();
 }
 
 void Tray::destroyIcon() {
+	_iconLifetime.destroy();
+	dismissMenu();
 	_nativeIcon = nullptr;
 }
 
@@ -412,40 +437,55 @@ void Tray::updateIcon() {
 	}
 }
 
+void Tray::setMenuBuilder(Fn<void()> builder) {
+	_menuBuilder = std::move(builder);
+}
+
+void Tray::dismissMenu() {
+	if (_nativeIcon) {
+		_nativeIcon->dismissMenu();
+	}
+	destroyMenu();
+}
+
 void Tray::createMenu() {
-	if (!_menu) {
-		_menu = base::make_unique_q<QMenu>(nullptr);
+	if (_menu) {
+		return;
 	}
-	const auto marker = u"kukagram-preferences"_q;
-	for (const auto action : _menu->actions()) {
-		if (action->objectName() == marker) {
-			return;
-		}
+	_menu = std::make_unique<MenuContents>();
+	if (Core::App().passcodeLocked()) {
+		return;
 	}
-	const auto action = _menu->addAction(
+	const auto widget = _menu->widget.get();
+	const auto action = widget->addAction(
 		u"kukagram: аккаунты, уведомления и клавиши"_q,
 		[] {
 			QTimer::singleShot(0, &Core::App(), [] {
 				Core::App().showKukagramPreferences();
 			});
 		});
-	action->setObjectName(marker);
-    const auto appearance = _menu->addAction(
-        u"kukagram: внешний вид"_q,
-        [] {
-            QTimer::singleShot(0, &Core::App(), [] {
-                Core::App().showKukagramAppearance();
-            });
-        });
-    appearance->setObjectName(u"kukagram-appearance"_q);
-	_menu->addSeparator();
+	action->setObjectName(u"kukagram-preferences"_q);
+	const auto appearance = widget->addAction(
+		u"kukagram: внешний вид"_q,
+		[] {
+			QTimer::singleShot(0, &Core::App(), [] {
+				Core::App().showKukagramAppearance();
+			});
+		});
+	appearance->setObjectName(u"kukagram-appearance"_q);
+	widget->addSeparator();
 }
 
 void Tray::destroyMenu() {
-	if (_menu) {
-		_menu->clear();
+	if (!_menu) {
+		return;
 	}
-	_actionsLifetime.destroy();
+	// AppKit may still dispatch the selected QAction after menuDidClose.
+	QTimer::singleShot(0, QCoreApplication::instance(), [
+		closed = std::move(_menu)
+	]() mutable {
+		closed.reset();
+	});
 }
 
 void Tray::addAction(rpl::producer<QString> text, Fn<void()> &&callback) {
@@ -460,13 +500,13 @@ void Tray::addAction(
 		return;
 	}
 
-	const auto action = _menu->addAction(QString(), std::move(callback));
+	const auto action = _menu->widget->addAction(QString(), std::move(callback));
 	action->setIcon(icon);
 	std::move(
 		text
 	) | rpl::on_next([=](const QString &text) {
 		action->setText(text);
-	}, _actionsLifetime);
+	}, _menu->actions);
 }
 
 void Tray::addAction(
@@ -478,7 +518,7 @@ void Tray::addAction(
 		return;
 	}
 
-	const auto action = _menu->addAction(QString(), std::move(callback));
+	const auto action = _menu->widget->addAction(QString(), std::move(callback));
 	if (icon) {
 		const auto updateIcon = crl::guard(action, [=] {
 			action->setIcon(QIcon(QPixmap::fromImage(icon->image(size))));
@@ -489,7 +529,7 @@ void Tray::addAction(
 			});
 		});
 		updateIcon();
-		_actionsLifetime.add([icon = std::move(icon)] {
+		_menu->actions.add([icon = std::move(icon)] {
 			icon->subscribeToUpdates(nullptr);
 		});
 	}
@@ -497,12 +537,12 @@ void Tray::addAction(
 		text
 	) | rpl::on_next([=](const QString &text) {
 		action->setText(text);
-	}, _actionsLifetime);
+	}, _menu->actions);
 }
 
 void Tray::addSeparator() {
 	if (_menu) {
-		_menu->addSeparator();
+		_menu->widget->addSeparator();
 	}
 }
 
@@ -537,6 +577,8 @@ rpl::lifetime &Tray::lifetime() {
 	return _lifetime;
 }
 
-Tray::~Tray() = default;
+Tray::~Tray() {
+	destroyIcon();
+}
 
 } // namespace Platform
