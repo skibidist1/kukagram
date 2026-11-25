@@ -26,7 +26,7 @@ StartWidget::StartWidget(
 	setMouseTracking(true);
 	setTitleText(rpl::single(u"kukagram"_q));
 	setDescriptionText(rpl::single(
-		u"Неофициальный клиент на базе Telegram Desktop.
+		u"Неофициальный клиент на базе Telegram Desktop.\nИспользует Telegram API."_q));
 	show();
 }
 

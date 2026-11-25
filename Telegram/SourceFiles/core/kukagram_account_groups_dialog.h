@@ -27,10 +27,28 @@ Local account groups for kukagram.
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace Core::KukagramAccountGroups {
+
+[[nodiscard]] inline rpl::variable<std::optional<Group>> &MenuGroup() {
+	static auto value = rpl::variable<std::optional<Group>>();
+	return value;
+}
+
+inline void RefreshMenuGroup(const Groups &groups, const QString &renamed = {}) {
+	const auto &active = MenuGroup().current();
+	if (!active) {
+		return;
+	}
+	const auto &name = renamed.isEmpty() ? active->name : renamed;
+	const auto found = std::find_if(groups.begin(), groups.end(), [&](const Group &group) {
+		return group.name == name;
+	});
+	MenuGroup() = (found == groups.end()) ? std::nullopt : std::optional(*found);
+}
 
 class GroupsDialog final : public QDialog {
 public:
@@ -38,7 +56,8 @@ public:
 		QWidget *parent,
 		not_null<Main::Domain*> domain,
 		QString workDir,
-		Groups groups)
+		Groups groups,
+		Fn<void()> showMenu = {})
 	: QDialog(parent)
 	, _domain(base::make_weak(domain))
 	, _workDir(std::move(workDir))
@@ -85,6 +104,7 @@ public:
 		layout->addLayout(actionsRow);
 		_addCurrent = addButton(actionsRow, u"Добавить текущий аккаунт"_q);
 		_open = addButton(actionsRow, u"Переключиться"_q);
+		_openInMenu = addButton(actionsRow, u"Открыть в меню ☰"_q);
 		actionsRow->addStretch();
 		const auto close = addButton(actionsRow, u"Закрыть"_q);
 
@@ -114,6 +134,18 @@ public:
 			}
 		});
 		connect(_open, &QPushButton::clicked, this, [=] { activateSelected(); });
+		connect(_openInMenu, &QPushButton::clicked, this, [=] {
+			const auto group = selectedGroup();
+			if (!group || !liveDomain()) {
+				return;
+			}
+			MenuGroup() = *group;
+			Core::App().settings().setMainMenuAccountsShown(true);
+			accept();
+			if (showMenu) {
+				QTimer::singleShot(0, QCoreApplication::instance(), showMenu);
+			}
+		});
 		connect(_accounts, &QListWidget::currentItemChanged, this, [=] {
 			updateButtons();
 		});
@@ -141,7 +173,13 @@ public:
 			if (liveDomain()) rebuildAccounts();
 		}, _lifetime);
 
-		rebuildGroups(0);
+		const auto &active = MenuGroup().current();
+		const auto current = active
+			? std::find_if(_groups.begin(), _groups.end(), [&](const Group &group) {
+				return group.name == active->name;
+			})
+			: _groups.end();
+		rebuildGroups(current == _groups.end() ? 0 : int(current - _groups.begin()));
 	}
 
 private:
@@ -188,7 +226,7 @@ private:
 		warning->open();
 	}
 
-	bool commit(Groups groups) {
+	bool commit(Groups groups, const QString &renamedActive = {}) {
 		if (!liveDomain()) {
 			return false;
 		}
@@ -197,6 +235,7 @@ private:
 			return false;
 		}
 		_groups = std::move(groups);
+		RefreshMenuGroup(_groups, renamedActive);
 		return true;
 	}
 
@@ -230,7 +269,11 @@ private:
 			} else {
 				return;
 			}
-			if (commit(std::move(groups))) {
+			const auto &active = MenuGroup().current();
+			const auto renamedActive = (index >= 0
+				&& active
+				&& active->name == _groups[index].name);
+			if (commit(std::move(groups), renamedActive ? name : QString())) {
 				rebuildGroups(index < 0 ? int(_groups.size()) - 1 : index);
 			}
 		});
@@ -401,6 +444,7 @@ private:
 		_view->setEnabled(group != nullptr);
 		_search->setEnabled(group != nullptr);
 		_open->setEnabled(group && item && !item->isHidden());
+		_openInMenu->setEnabled(group != nullptr);
 		_addCurrent->setEnabled(group && id
 			&& std::find(group->members.begin(), group->members.end(), id)
 				== group->members.end());
@@ -443,6 +487,7 @@ private:
 	QPushButton *_remove = nullptr;
 	QPushButton *_addCurrent = nullptr;
 	QPushButton *_open = nullptr;
+	QPushButton *_openInMenu = nullptr;
 	rpl::lifetime _lifetime;
 };
 
@@ -450,7 +495,7 @@ private:
 
 namespace Core {
 
-inline void ShowKukagramAccountGroupsDialog() {
+inline void ShowKukagramAccountGroupsDialog(Fn<void()> showMenu = {}) {
 	if (Quitting() || App().passcodeLocked() || !App().domain().started()) {
 		return;
 	}
@@ -473,8 +518,13 @@ inline void ShowKukagramAccountGroupsDialog() {
 		warning->open();
 		return;
 	}
+	KukagramAccountGroups::RefreshMenuGroup(result.groups);
 	const auto dialog = new KukagramAccountGroups::GroupsDialog(
-		parent, &App().domain(), cWorkingDir(), std::move(result.groups));
+		parent,
+		&App().domain(),
+		cWorkingDir(),
+		std::move(result.groups),
+		std::move(showMenu));
 	dialog->show();
 }
 

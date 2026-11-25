@@ -41,6 +41,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h"
 #include "webview/webview_dialog.h"
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QMessageBox>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QSettings>
@@ -139,6 +140,25 @@ Storage::StartResult Domain::startWith(
 		crl::on_main(&Core::App(), [=] { suggestExportIfNeeded(); });
 	} else {
 		Assert(!started());
+		if (result == Storage::StartResult::ProfileReadError) {
+			crl::on_main(this, [] {
+				if (Core::Quitting()) {
+					return;
+				}
+				const auto window = Core::App().activePrimaryWindow();
+				const auto box = new QMessageBox(
+					QMessageBox::Critical,
+					u"kukagram"_q,
+					u"Не удалось прочитать локальный профиль. Проверьте доступ к папке "
+					u"профиля или восстановите её из резервной копии, затем откройте kukagram снова."_q,
+					QMessageBox::Close,
+					window ? window->widget().get() : nullptr);
+				box->setAttribute(Qt::WA_DeleteOnClose);
+				box->setWindowModality(Qt::ApplicationModal);
+				QObject::connect(box, &QMessageBox::finished, box, [] { Core::Quit(); });
+				box->show();
+			});
+		}
 	}
 	return result;
 }
@@ -158,19 +178,27 @@ bool Domain::tryPasscode(
 			if (Core::Quitting()) {
 				return;
 			}
-			const auto correct = (cold == started())
-				? false
-				: cold
-				? (startWith(std::move(derived))
-					== Storage::StartResult::Success)
-				: _local->checkPasscode(std::move(derived));
-			done(correct);
+			if (cold == started()) {
+				done(false);
+			} else if (!cold) {
+				done(_local->checkPasscode(std::move(derived)));
+			} else {
+				const auto result = startWith(std::move(derived));
+				if (result != Storage::StartResult::ProfileReadError) {
+					done(result == Storage::StartResult::Success);
+				}
+			}
 		}));
 	return true;
 }
 
 void Domain::finish() {
 	_retirementTimer.cancel();
+	// Capture the live selection before tearing down the accounts. Local::finish()
+	// drains the storage writer, but not callbacks still queued on the UI thread.
+	if (base::take(_writeAccountsScheduled) && started()) {
+		_local->writeAccounts();
+	}
 	if (_walletKeyring) {
 		_walletKeyring->clear();
 	}
@@ -335,7 +363,7 @@ int Domain::storedAccountsCount() const {
 }
 
 bool Domain::cycleStoredAccount(int direction) {
-	if (!started() || !direction || _switchingStored
+	if (!started() || !direction || _switchingStored || _resettingStored
 		|| _retiringInactiveAccounts || Core::Quitting()
 		|| Core::App().passcodeLocked()) {
 		return false;
@@ -409,11 +437,11 @@ void Domain::storedAccountAdded(StoredAccount account) {
 }
 
 void Domain::finishLogin(not_null<Account*> account) {
+	scheduleWriteAccounts();
 	crl::on_main(account, [=] {
 		if (Core::Quitting() || !account->sessionExists()) {
 			return;
 		}
-		scheduleWriteAccounts();
 		_accountsChanges.fire({});
 		retireInactiveAccounts(kRetirementRetryDelay);
 	});
@@ -604,7 +632,8 @@ void Domain::activateStored(
 		QString startUrl,
 		int discardPendingIndex,
 		bool newWindow) {
-	if (_switchingStored || _retiringInactiveAccounts || Core::Quitting()) {
+	if (_switchingStored || _resettingStored
+		|| _retiringInactiveAccounts || Core::Quitting()) {
 		return;
 	}
 	const auto stored = storedAccounts();
@@ -617,13 +646,15 @@ void Domain::activateStored(
 		}
 		return;
 	}
+	const auto targetId = target->uniqueId;
 	auto invoke = crl::guard(this, [=] {
-		if (_switchingStored || _retiringInactiveAccounts || Core::Quitting()) {
+		if (_switchingStored || _resettingStored
+			|| _retiringInactiveAccounts || Core::Quitting()) {
 			return;
 		}
 		const auto list = storedAccounts();
 		const auto target = ranges::find(list, index, &StoredAccount::index);
-		if (target == end(list)) {
+		if (target == end(list) || target->uniqueId != targetId) {
 			return;
 		}
 		_switchingStored = true;
@@ -805,9 +836,28 @@ void Domain::scheduleUpdateUnreadBadge() {
 	}));
 }
 
-not_null<Main::Account*> Domain::add(MTP::Environment environment) {
+int Domain::firstFreeAccountIndex() const {
+	auto occupied = std::bitset<kLocalMaxAccounts>();
+	for (const auto &entry : _storedAccounts) {
+		occupied.set(entry.index);
+	}
+	// Sessionless accounts can still own their local storage while a
+	// window or logout callback keeps them live.
+	for (const auto &entry : _accounts) {
+		occupied.set(entry.index);
+	}
+	for (auto index = 0; index != kLocalMaxAccounts; ++index) {
+		if (!occupied.test(index)) {
+			return index;
+		}
+	}
+	return -1;
+}
+
+not_null<Main::Account*> Domain::add(
+		MTP::Environment environment,
+		int index) {
 	Expects(started());
-	Expects(storedAccountsCount() < kLocalMaxAccounts);
 
 	static const auto cloneConfig = [](const MTP::Config &config) {
 		return std::make_unique<MTP::Config>(config);
@@ -830,14 +880,6 @@ not_null<Main::Account*> Domain::add(MTP::Environment environment) {
 			? cloneConfig(Core::App().fallbackProductionConfig())
 			: std::make_unique<MTP::Config>(environment);
 	}();
-	auto occupied = std::bitset<kLocalMaxAccounts>();
-	for (const auto &entry : storedAccounts()) {
-		occupied.set(entry.index);
-	}
-	auto index = 0;
-	while (occupied.test(index)) {
-		++index;
-	}
 	_accounts.push_back(AccountWithIndex{
 		.index = index,
 		.account = std::make_unique<Account>(this, _dataName, index)
@@ -890,8 +932,8 @@ void Domain::addActivated(MTP::Environment environment, bool newWindow) {
 			return;
 		}
 	}
-	if (storedAccountsCount() < maxAccounts()) {
-		added(add(environment));
+	if (const auto index = firstFreeAccountIndex(); index >= 0) {
+		added(add(environment, index));
 	}
 }
 
@@ -934,8 +976,12 @@ void Domain::watchSession(not_null<Account*> account) {
 			}), end(_storedAccounts));
 			_pendingAccounts.erase(std::remove(begin(_pendingAccounts), end(_pendingAccounts), index), end(_pendingAccounts));
 			if (!_storedAccounts.empty() && _accounts.size() == 1) {
-				const auto next = _storedAccounts.front().index;
-				crl::on_main(this, [=] { activateStored(next); });
+				const auto next = ranges::find_if(_storedAccounts, [](const auto &stored) {
+					return stored.uniqueId != 0;
+				});
+				if (next != end(_storedAccounts)) {
+					crl::on_main(this, [=, index = next->index] { activateStored(index); });
+				}
 			}
 		}
 
@@ -1023,8 +1069,7 @@ void Domain::reportFailedPasscodeClear() {
 }
 
 void Domain::removeRedundantAccounts() {
-	Expects(started());
-	if (_retiringInactiveAccounts) {
+	if (Core::Quitting() || !started() || _retiringInactiveAccounts) {
 		return;
 	}
 
@@ -1135,6 +1180,11 @@ void Domain::activate(not_null<Main::Account*> account) {
 	_active.current()->sessionValue(
 	) | rpl::start_to_stream(_activeSessions, _activeLifetime);
 
+	if (_accounts.size() > 1 && !_switchingStored && !_resettingStored
+		&& !Core::Quitting()) {
+		_retirementTimer.callOnce(kRetirementRetryDelay);
+	}
+
 	if (changed) {
 		if (wasAuthed) {
 			scheduleWriteAccounts();
@@ -1151,9 +1201,10 @@ void Domain::scheduleWriteAccounts() {
 		return;
 	}
 	_writeAccountsScheduled = true;
-	crl::on_main(&Core::App(), [=] {
-		_writeAccountsScheduled = false;
-		_local->writeAccounts();
+	crl::on_main(this, [=] {
+		if (base::take(_writeAccountsScheduled) && started()) {
+			_local->writeAccounts();
+		}
 	});
 }
 

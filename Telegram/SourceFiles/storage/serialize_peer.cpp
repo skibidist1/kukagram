@@ -454,4 +454,36 @@ QString peekUserPhone(int streamAppVersion, QDataStream &stream) {
 	return phone;
 }
 
+std::optional<UserIdentity> peekUserIdentity(
+		int streamAppVersion,
+		QDataStream &stream) {
+	quint64 peerIdSerialized = 0, versionTag = 0, photoId = 0;
+	qint32 version = 0, photoHasVideo = 0;
+	stream >> peerIdSerialized >> versionTag;
+	const auto peerId = DeserializePeerId(peerIdSerialized);
+	if (stream.status() != QDataStream::Ok
+		|| !peerId
+		|| !peerIsUser(peerId)) {
+		return std::nullopt;
+	}
+	if (versionTag == kVersionTag) {
+		stream >> version >> photoId;
+	} else {
+		photoId = versionTag;
+	}
+	if (stream.status() != QDataStream::Ok
+		|| !readImageLocation(streamAppVersion, stream)) {
+		return std::nullopt;
+	}
+	if (version > 0) {
+		stream >> photoHasVideo;
+	}
+	auto result = UserIdentity{ .id = peerId };
+	stream >> result.firstName >> result.lastName >> result.phone;
+	if (stream.status() != QDataStream::Ok) {
+		return std::nullopt;
+	}
+	return result;
+}
+
 } // namespace Serialize

@@ -488,7 +488,9 @@ void Expire(not_null<Main::Session*> session) {
 
 void Forget(not_null<Main::Session*> session) {
 	auto &registry = Stores();
-	FinishWrites(session);
+	if (!CheckpointStorage(session)) {
+		LOG(("Tgw Error: A widget write is pending after session shutdown."));
+	}
 	registry.sessions.remove(session);
 	for (auto i = begin(registry.hosts); i != end(registry.hosts);) {
 		if (i->second.session == session) {
@@ -512,7 +514,12 @@ void StartStorage(not_null<Main::Session*> session) {
 		session,
 		std::make_unique<Store>()).first->second.get();
 	if (key) {
-		store->disk.emplace(folder, std::move(key), session->uniqueId());
+		// A just-reused slot may have an ordered erase from the previous owner.
+		if (Storage::details::SyncWritesFor(folder)) {
+			store->disk.emplace(folder, std::move(key), session->uniqueId());
+		} else {
+			LOG(("Tgw Error: Earlier writes prevented opening widget storage."));
+		}
 	}
 	store->writeTimer.setCallback([=] {
 		WriteAll(session);
@@ -544,6 +551,15 @@ void StartStorage(not_null<Main::Session*> session) {
 		Forget(session);
 	});
 	Expire(session);
+}
+
+bool CheckpointStorage(not_null<Main::Session*> session) {
+	const auto store = Find(session);
+	if (!store || !store->disk) {
+		return true;
+	}
+	FinishWrites(session);
+	return Storage::details::SyncWritesFor(StorageFolder(&session->account()));
 }
 
 twidget::WidgetStorage StoredAreas(not_null<HistoryItem*> item) {

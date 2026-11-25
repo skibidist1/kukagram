@@ -65,7 +65,8 @@ bool Account::checkpointForRetirement() {
 		return false;
 	}
 	_session->saveSettingsNowIfNeeded();
-	return _local->checkpointForRetirement();
+	return Tgw::CheckpointStorage(_session.get())
+		&& _local->checkpointForRetirement();
 }
 
 void Account::prepareForRetirement() {

@@ -465,9 +465,8 @@ void ShowKukagramNotificationAccountsDialog(not_null<Main::Domain*> domain) {
 		u"Нажми кнопку сочетания, затем новые клавиши. "
 		u"На Mac запоминается физическая клавиша: русская и английская "
 		u"раскладки работают одинаково. "
-		u"Если другие разрешённые аккаунты должны уведомлять в фоне, "
-		u"открой каждый из них после запуска и включи "
-		u"общую опцию уведомлений от всех аккаунтов."_q,
+		u"Чтобы получать фоновые уведомления от отмеченных аккаунтов, "
+		u"открой каждый из них один раз после запуска приложения."_q,
 		dialog);
 	hint->setWordWrap(true);
 	layout->addWidget(hint);
@@ -654,6 +653,7 @@ void ShowKukagramAppearanceDialog() {
 			animations->isChecked(),
 			avatar->isChecked(),
 			studio->isChecked(),
+			KukagramAppearance::MoonVisible(),
 		};
 		if (!KukagramAppearance::Save(values)) {
 			ShowKukagramWarning(dialog,
@@ -1244,10 +1244,10 @@ void Application::activate() {
 auto Application::prepareEmojiSourceImages()
 -> std::shared_ptr<Ui::Emoji::UniversalImages> {
 	const auto &images = Ui::Emoji::SourceImages();
+	Ui::Emoji::ClearSourceImages(images);
 	if (settings().largeEmoji()) {
 		return images;
 	}
-	Ui::Emoji::ClearSourceImages(images);
 	return std::make_shared<Ui::Emoji::UniversalImages>(images->id());
 }
 

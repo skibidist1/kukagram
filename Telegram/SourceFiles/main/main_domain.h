@@ -135,7 +135,6 @@ public:
 	[[nodiscard]] rpl::producer<> unreadBadgeChanges() const;
 	void notifyUnreadBadgeChanged();
 
-	[[nodiscard]] not_null<Main::Account*> add(MTP::Environment environment);
 	void maybeActivate(not_null<Main::Account*> account);
 	void activate(not_null<Main::Account*> account);
 	void addActivated(MTP::Environment environment, bool newWindow = false);
@@ -153,6 +152,10 @@ private:
 		Storage::PasscodeDerivation derived);
 	void activateAfterStarting();
 	void closeAccountWindows(not_null<Main::Account*> account);
+	[[nodiscard]] int firstFreeAccountIndex() const;
+	[[nodiscard]] not_null<Account*> add(
+		MTP::Environment environment,
+		int index);
 
 	// Answers whether a removal ran whose checked write already persisted
 	// the current accounts info - not whether a passcode is gone, which
