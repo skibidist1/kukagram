@@ -91,6 +91,11 @@ struct BubblePattern {
 	QPixmap pixmap;
 	std::array<QImage, 4> cornersSmall;
 	std::array<QImage, 4> cornersLarge;
+	std::array<QImage, 4> cornersLargeText;
+	mutable QPixmap kukagramPixmap;
+	mutable qint64 kukagramPixmapSourceKey = 0;
+	mutable QImage cornerTopTextCache;
+	mutable QImage cornerBottomTextCache;
 	QImage tailLeft;
 	QImage tailRight;
 	mutable QImage cornerTopSmallCache;
@@ -113,6 +118,8 @@ struct SimpleBubble {
 	bool selected = false;
 	bool shadowed = true;
 	bool outbg = false;
+	bool allowRoundedText = false;
+	bool allowStudioText = false;
 	BubbleRounding rounding;
 };
 

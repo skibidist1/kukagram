@@ -6,9 +6,9 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ui/chat/chat_style_radius.h"
-#include "ui/chat/chat_style.h"
-#include "base/options.h"
 
+#include "base/options.h"
+#include "ui/chat/chat_style.h"
 #include "ui/chat/chat_theme.h"
 #include "ui/painter.h"
 #include "ui/ui_utility.h"
@@ -41,6 +41,13 @@ int BubbleRadiusLarge() {
 		}
 	}();
 	return result;
+}
+
+int KukagramTextBubbleRadiusLarge() {
+	const auto value = BubbleRadiusLarge();
+	return (value > BubbleRadiusSmall())
+		? value + 2 * st::lineWidth
+		: value;
 }
 
 int BubbleCornerRadius(BubbleCornerRounding corner) {

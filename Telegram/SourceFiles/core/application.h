@@ -202,6 +202,8 @@ public:
 	void closeChatFromWindows(not_null<PeerData*> peer);
 	void checkWindowId(not_null<Window::Controller*> window);
 	void activate();
+	void showKukagramPreferences();
+	void showKukagramAppearance();
 	[[nodiscard]] Window::SavedWindows *savedWindows() const {
 		return _savedWindows.get();
 	}
@@ -253,7 +255,7 @@ public:
 	[[nodiscard]] Export::Manager &exportManager() const {
 		return *_exportManager;
 	}
-	[[nodiscard]] bool exportPreventsQuit();
+	[[nodiscard]] bool exportPreventsQuit(Fn<void()> retry = nullptr);
 
 	// Main::Session component.
 	Main::Session *maybePrimarySession() const;
@@ -313,8 +315,8 @@ public:
 	void forceLogOut(
 		not_null<Main::Account*> account,
 		const TextWithEntities &explanation);
-	[[nodiscard]] bool uploadPreventsQuit();
-	[[nodiscard]] bool downloadPreventsQuit();
+	[[nodiscard]] bool uploadPreventsQuit(Fn<void()> retry = nullptr);
+	[[nodiscard]] bool downloadPreventsQuit(Fn<void()> retry = nullptr);
 	void checkLocalTime();
 	void lockByPasscode();
 	void maybeLockByPasscode();
@@ -330,7 +332,7 @@ public:
 	void checkAutoLockIn(crl::time time);
 	void localPasscodeChanged();
 
-	[[nodiscard]] bool preventsQuit(QuitReason reason);
+	[[nodiscard]] bool preventsQuit(QuitReason reason, Fn<void()> retry = nullptr);
 
 	[[nodiscard]] crl::time lastNonIdleTime() const;
 	void updateNonIdle();
@@ -512,6 +514,6 @@ void SetLaunchState(LaunchState state);
 void Quit(QuitReason reason = QuitReason::Default);
 [[nodiscard]] bool Quitting();
 
-void Restart();
+void Restart(bool toSettings = true, Fn<bool()> prepare = nullptr);
 
 } // namespace Core

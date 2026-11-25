@@ -10,9 +10,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/timer.h"
 #include "base/weak_ptr.h"
 
+#include <unordered_set>
+
 namespace Storage {
 class Domain;
 class PasscodeDerivation;
+struct ImportedAccount;
 enum class StartResult : uchar;
 } // namespace Storage
 
@@ -29,15 +32,31 @@ namespace Main {
 class Account;
 class Session;
 
+enum class TdataImportStatus {
+	Added,
+	Existing,
+	Invalid,
+	Failed,
+};
+
+struct StoredAccount {
+	int index = 0;
+	uint64 uniqueId = 0;
+	QString name;
+	QString phone;
+	bool authorizationKnown = false;
+};
+
 class Domain final : public base::has_weak_ptr {
 public:
+	using StoredAccount = Main::StoredAccount;
+
 	struct AccountWithIndex {
 		int index = 0;
 		std::unique_ptr<Account> account;
 	};
 
-	static constexpr auto kMaxAccounts = 3;
-	static constexpr auto kPremiumMaxAccounts = 6;
+	static constexpr auto kLocalMaxAccounts = 1000;
 
 	explicit Domain(const QString &dataName);
 	~Domain();
@@ -65,8 +84,9 @@ public:
 	void resetWithForgottenPasscode();
 	void finish();
 
-	[[nodiscard]] int maxAccounts() const;
-	[[nodiscard]] rpl::producer<int> maxAccountsChanges() const;
+	[[nodiscard]] static constexpr int maxAccounts() {
+		return kLocalMaxAccounts;
+	}
 
 	[[nodiscard]] Storage::Domain &local() const {
 		return *_local;
@@ -77,6 +97,27 @@ public:
 	[[nodiscard]] auto accounts() const
 		-> const std::vector<AccountWithIndex> &;
 	[[nodiscard]] std::vector<not_null<Account*>> orderedAccounts() const;
+	[[nodiscard]] std::vector<StoredAccount> storedAccounts() const;
+	[[nodiscard]] int storedAccountsCount() const;
+	// Cycle through signed-in, including cold-stored, accounts in menu order.
+	bool cycleStoredAccount(int direction);
+	// Local, per-account notification allowlist; defaults to all allowed.
+	[[nodiscard]] bool notificationsAllowed(uint64 sessionId) const;
+	[[nodiscard]] bool notificationAllowlistConfigured() const {
+		return _notificationAllowlistConfigured;
+	}
+	[[nodiscard]] bool saveNotificationAllowlist(
+		const std::vector<uint64> &allowed);
+	void storedAccountAdded(StoredAccount account);
+	void finishLogin(not_null<Account*> account);
+	[[nodiscard]] TdataImportStatus importAccount(
+		const Storage::ImportedAccount &data,
+		not_null<Account*> pending);
+	void activateStored(
+		int index,
+		QString startUrl = {},
+		int discardPendingIndex = -1,
+		bool newWindow = false);
 	[[nodiscard]] rpl::producer<Account*> activeValue() const;
 	[[nodiscard]] rpl::producer<> accountsChanges() const;
 	[[nodiscard]] Account *maybeLastOrSomeAuthedAccount();
@@ -140,12 +181,20 @@ private:
 	void updateUnreadBadge();
 	void scheduleUpdateUnreadBadge();
 	void suggestExportIfNeeded();
+	void retireInactiveAccounts(crl::time retryDelay);
+	[[nodiscard]] bool canRetireAccount(not_null<Account*> account) const;
 
 	const QString _dataName;
 	const std::unique_ptr<Storage::Domain> _local;
 
 	std::shared_ptr<Wallet::VaultRuntime> _walletKeyring;
 	std::vector<AccountWithIndex> _accounts;
+	std::vector<StoredAccount> _storedAccounts;
+	bool _switchingStored = false;
+	bool _resettingStored = false;
+	bool _retiringInactiveAccounts = false;
+	base::Timer _retirementTimer;
+	std::vector<int> _pendingAccounts;
 	rpl::event_stream<> _accountsChanges;
 	rpl::variable<Account*> _active = nullptr;
 	int _accountToActivate = -1;
@@ -159,8 +208,8 @@ private:
 	bool _unreadBadgeMuted = true;
 	bool _unreadBadgeUpdateScheduled = false;
 	bool _passcodeDeriving = false;
-
-	rpl::variable<int> _lastMaxAccounts;
+	bool _notificationAllowlistConfigured = false;
+	std::unordered_set<uint64> _notificationAllowed;
 
 	rpl::lifetime _activeLifetime;
 	rpl::lifetime _lifetime;

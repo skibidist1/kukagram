@@ -358,9 +358,12 @@ System::SkipState System::computeSkipState(
 	const auto notifyBy = messageType
 		? item->specialNotificationPeer()
 		: notification.reactionOrVoteSender;
-	if (Core::Quitting()) {
+	if (Core::Quitting()
+		|| !Core::App().domain().notificationsAllowed(
+			thread->session().uniqueId())) {
 		return { SkipState::Skip };
-	} else if (!Core::App().settings().notifyFromAll()
+	} else if (!Core::App().domain().notificationAllowlistConfigured()
+		&& !Core::App().settings().notifyFromAll()
 		&& &thread->session().account() != &Core::App().domain().active()) {
 		return { SkipState::Skip };
 	}
@@ -504,6 +507,12 @@ void System::schedule(Data::ItemNotification notification) {
 }
 
 void System::clearAll() {
+	_waitTimer.cancel();
+	_waitForAllGroupedTimer.cancel();
+	_lastForwardedCount = 0;
+	_lastHistorySessionId = 0;
+	_lastHistoryItemId = FullMsgId();
+	_lastSoundId = {};
 	if (_manager) {
 		_manager->clearAll();
 	}
@@ -731,6 +740,12 @@ void System::clearFromItem(not_null<HistoryItem*> item) {
 }
 
 void System::clearAllFast() {
+	_waitTimer.cancel();
+	_waitForAllGroupedTimer.cancel();
+	_lastForwardedCount = 0;
+	_lastHistorySessionId = 0;
+	_lastHistoryItemId = FullMsgId();
+	_lastSoundId = {};
 	if (_manager) {
 		_manager->clearAllFast();
 	}
@@ -781,7 +796,9 @@ void System::checkDelayed() {
 void System::showGrouped() {
 	Expects(_manager != nullptr);
 
-	if (const auto session = findSession(_lastHistorySessionId)) {
+	if (const auto session = findSession(_lastHistorySessionId);
+		session && Core::App().domain().notificationsAllowed(
+			session->uniqueId())) {
 		if (const auto lastItem = session->data().message(_lastHistoryItemId)) {
 			_waitForAllGroupedTimer.cancel();
 			const auto thread = lastItem->maybeNotificationThread();
@@ -850,7 +867,8 @@ void System::showNext() {
 		}
 	}
 	const auto &settings = Core::App().settings();
-	if (alertThread) {
+	if (alertThread && Core::App().domain().notificationsAllowed(
+			alertThread->session().uniqueId())) {
 		if (settings.flashBounceNotify()) {
 			const auto peer = alertThread->peer();
 			if (const auto window = Core::App().windowFor(peer)) {
@@ -1184,7 +1202,9 @@ void System::playSound(
 		not_null<Main::Session*> session,
 		DocumentId id,
 		float64 volumeOverride) {
-	lookupSound(&session->data(), id)->playOnce(volumeOverride);
+	if (Core::App().domain().notificationsAllowed(session->uniqueId())) {
+		lookupSound(&session->data(), id)->playOnce(volumeOverride);
+	}
 }
 
 Manager::DisplayOptions Manager::getNotificationOptions(

@@ -19,6 +19,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "calls/calls_instance.h"
 #include "core/application.h"
 #include "core/click_handler_types.h"
+#ifdef Q_OS_MAC
+#include "core/kukagram_account_groups_dialog.h"
+#endif
 #include "data/data_changes.h"
 #include "data/data_document_media.h"
 #include "data/data_folder.h"
@@ -773,6 +776,18 @@ void MainMenu::setupMenu() {
 	)->setClickedCallback([=] {
 		controller->showSettings();
 	});
+
+#ifdef Q_OS_MAC
+	addAction(
+		rpl::single(u"Группы аккаунтов"_q),
+		{ &st::menuIconNewGroup }
+	)->setClickedCallback([=] {
+		controller->window().hideSettingsAndLayer();
+		InvokeQueued(&Core::App(), [] {
+			Core::ShowKukagramAccountGroupsDialog();
+		});
+	});
+#endif // Q_OS_MAC
 
 	_nightThemeToggle = addAction(
 		tr::lng_menu_night_mode(),

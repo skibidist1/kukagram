@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/history_view_welcome_messages_section.h"
 
+#include "ui/chat/studio_paint.h"
+
 #include "api/api_sending.h"
 #include "apiwrap.h"
 #include "base/call_delayed.h"
@@ -875,6 +877,7 @@ void WelcomeMessagesWidget::paintEvent(QPaintEvent *e) {
 	}
 	const auto clip = e->rect();
 	SectionWidget::PaintBackground(controller(), _theme.get(), this, clip);
+	Ui::Studio::PaintBackdrop(this, clip);
 }
 
 void WelcomeMessagesWidget::onScroll() {

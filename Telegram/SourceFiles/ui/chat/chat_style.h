@@ -60,8 +60,19 @@ inline constexpr auto kDefaultOutline3Opacity = 0.6;
 inline constexpr auto kDefaultOutlineOpacitySecond = 0.5;
 
 struct MessageStyle {
+	[[nodiscard]] const CornersPixmaps &solidBubbleCorners(
+		bool large,
+		bool roundedText,
+		bool soft) const;
+
 	CornersPixmaps msgBgCornersSmall;
 	CornersPixmaps msgBgCornersLarge;
+	mutable CornersPixmaps kukagramBgCornersSmall;
+	mutable CornersPixmaps kukagramBgCornersLarge;
+	mutable CornersPixmaps kukagramBgCornersText;
+	mutable CornersPixmaps msgBgCornersText;
+	std::optional<style::owned_color> kukagramBg;
+	std::optional<std::array<QColor, 2>> studioBg;
 	style::color msgBg;
 	style::color msgShadow;
 	style::color msgServiceFg;

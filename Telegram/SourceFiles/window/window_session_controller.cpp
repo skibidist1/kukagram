@@ -2157,26 +2157,21 @@ void SessionController::setupShortcuts() {
 		using C = Command;
 
 		const auto app = &Core::App();
-		const auto accountsCount = int(app->domain().accounts().size());
+		const auto accountsCount = app->domain().storedAccountsCount();
 		auto &&accounts = ranges::views::zip(
 			kShowAccount,
 			ranges::views::ints(0, accountsCount));
 		for (const auto &[command, index] : accounts) {
 			request->check(command) && request->handle([=] {
-				const auto list = app->domain().orderedAccounts();
+				const auto list = app->domain().storedAccounts();
 				if (index >= list.size()) {
 					return false;
 				}
-				const auto account = list[index];
-				if (account == &session().account()) {
+				const auto &account = list[index];
+				if (account.uniqueId == session().uniqueId()) {
 					return false;
 				}
-				const auto window = app->separateWindowFor(account);
-				if (window) {
-					window->activate();
-				} else {
-					app->domain().maybeActivate(account);
-				}
+				app->domain().activateStored(account.index);
 				return true;
 			});
 		}

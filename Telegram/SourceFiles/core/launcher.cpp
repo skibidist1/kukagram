@@ -452,7 +452,21 @@ bool Launcher::validateCustomWorkingDir() {
 			_customWorkingDir = QString();
 			return false;
 		}
+#if defined Q_OS_MAC && !defined OS_MAC_STORE
+		// The caller may have selected an existing folder used by other apps.
+		// New directories are already private under the launcher's umask.
+		QDir().mkpath(_customWorkingDir);
+		cSetWorkingDir(_customWorkingDir);
+#else
+#if defined Q_OS_MAC && !defined OS_MAC_STORE
+		// The caller may have selected an existing folder used by other apps.
+		// New directories are already private under the launcher's umask.
+		QDir().mkpath(_customWorkingDir);
+		cSetWorkingDir(_customWorkingDir);
+#else
 		cForceWorkingDir(_customWorkingDir);
+#endif
+#endif
 		return true;
 	}
 	return false;

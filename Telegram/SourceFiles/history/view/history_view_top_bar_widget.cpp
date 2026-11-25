@@ -6,6 +6,8 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/history_view_top_bar_widget.h"
+#include "core/kukagram_appearance.h"
+#include "ui/chat/studio_paint.h"
 
 #include "history/history.h"
 #include "history/view/history_view_send_action.h"
@@ -72,11 +74,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_info.h"
 
 #include <QtGui/QWindow>
+#include <cmath>
 
 namespace HistoryView {
 namespace {
 
 constexpr auto kEmojiInteractionSeenDuration = 3 * crl::time(1000);
+constexpr auto kKukagramPulseDuration = crl::time(280);
 
 [[nodiscard]] inline bool HasGroupCallMenu(not_null<PeerData*> peer) {
 	return !peer->isUser()
@@ -132,6 +136,8 @@ TopBarWidget::TopBarWidget(
 , _titlePeerText(st::windowMinWidth / 3)
 , _onlineUpdater([=] { updateOnlineDisplay(); }) {
 	setAttribute(Qt::WA_OpaquePaintEvent);
+	installEventFilter(this);
+	refreshKukagramAvatar();
 
 	_clear->setTextTransform(Ui::RoundButtonTextTransform::ToUpper);
 	_forward->setTextTransform(Ui::RoundButtonTextTransform::ToUpper);
@@ -270,6 +276,66 @@ TopBarWidget::TopBarWidget(
 }
 
 TopBarWidget::~TopBarWidget() = default;
+
+void TopBarWidget::refreshKukagramAvatar() {
+	if (!Core::KukagramAppearance::Current().avatar) {
+		_kukagramAccountAvatar.destroy();
+		return;
+	}
+	if (!_kukagramAccountAvatar) {
+		auto avatar = object_ptr<Ui::UserpicButton>(
+			this,
+			_controller,
+			session().user()->userpicPaintingPeer(),
+			Ui::UserpicButton::Role::Custom,
+			Ui::UserpicButton::Source::PeerPhoto,
+			st::topBarCommunityInfoButton,
+			session().user()->userpicShape());
+		avatar->setAttribute(Qt::WA_TransparentForMouseEvents);
+		avatar->setFocusPolicy(Qt::NoFocus);
+		_kukagramAccountAvatar = std::move(avatar);
+	}
+	updateKukagramAvatarVisibility();
+}
+
+void TopBarWidget::updateKukagramAvatarVisibility() {
+	if (!_kukagramAccountAvatar) {
+		return;
+	}
+	const auto required = _back->width()
+		+ st::topBarInfoButton.size.width()
+		+ st::dialogsTextWidthMin
+		+ st::topBarNameRightPadding
+		+ _menuToggle->width()
+		+ _infoToggle->width()
+		+ _call->width()
+		+ _search->width()
+		+ _kukagramAccountAvatar->width();
+	_kukagramAccountAvatar->setVisible(
+		Core::KukagramAppearance::Current().avatar
+		&& bool(_activeChat.key)
+		&& width() >= required
+		&& _narrowRatio == 0.
+		&& !_searchMode
+		&& !_searchShown.animating()
+		&& !_selectedShown.animating()
+		&& !_animatingMode
+		&& !_chooseForReportReason
+		&& !showSelectedState());
+}
+
+void TopBarWidget::startKukagramPulse() {
+	_kukagramPulse.stop();
+	if (!Core::KukagramAppearance::Current().animations
+		|| anim::Disabled()
+		|| !_activeChat.key
+		|| !isVisible()) {
+		return;
+	}
+	_kukagramPulse.start([=] {
+		update();
+	}, 0., 1., kKukagramPulseDuration, anim::sineInOut);
+}
 
 Main::Session &TopBarWidget::session() const {
 	return _controller->session();
@@ -500,6 +566,23 @@ void TopBarWidget::toggleInfoSection() {
 }
 
 bool TopBarWidget::eventFilter(QObject *obj, QEvent *e) {
+	if (obj == this) {
+		if (int(e->type()) == Core::KukagramAppearance::ChangeEventType()) {
+			refreshKukagramAvatar();
+			if (!Core::KukagramAppearance::Current().animations) {
+				_kukagramPulse.stop();
+			}
+			updateControlsVisibility();
+			updateControlsGeometry();
+			update();
+			if (const auto section = parentWidget()) {
+				section->update();
+			}
+			return true;
+		} else if (e->type() == QEvent::Hide) {
+			_kukagramPulse.stop();
+		}
+	}
 	if (obj == _membersShowArea) {
 		switch (e->type()) {
 		case QEvent::MouseButtonPress:
@@ -536,10 +619,59 @@ void TopBarWidget::paintEvent(QPaintEvent *e) {
 		: -st::topBarHeight;
 	const auto slidingTop = std::max(selectedButtonsTop, searchFieldTop);
 
-	p.fillRect(QRect(0, 0, width(), st::topBarHeight), st::topBarBg);
+	const auto appearance = Core::KukagramAppearance::Current();
+	const auto bar = QRect(0, 0, width(), st::topBarHeight);
+	p.fillRect(bar, st::topBarBg);
+	if (appearance.studio) {
+		Ui::Studio::PaintHeader(p, bar, 2 * st::lineWidth);
+	} else if (appearance.colors) {
+		p.fillRect(bar, (st::topBarBg->c.lightness() < 128)
+			? QColor(34, 31, 43)
+			: QColor(242, 237, 250));
+		p.fillRect(bar, QColor(106, 70, 164, 42));
+		const auto accent = st::lineWidth * 2;
+		p.fillRect(
+			QRect(0, st::topBarHeight - accent, width(), accent),
+			QColor(166, 234, 202, 110));
+	}
 	if (slidingTop < 0) {
+		p.save();
 		p.translate(0, slidingTop + st::topBarHeight);
 		paintTopBar(p);
+		p.restore();
+	}
+	if (appearance.animations && _kukagramPulse.animating()) {
+		const auto progress = _kukagramPulse.value(1.);
+		const auto opacity = std::sin(progress * M_PI);
+		const auto accent = st::lineWidth * 3;
+		p.fillRect(bar, QColor(123, 92, 176, int(24 * opacity)));
+		p.fillRect(
+			QRect(0, st::topBarHeight - accent, width(), accent),
+			QColor(166, 234, 202, int(140 * opacity)));
+	}
+	if (_kukagramAccountAvatar
+		&& !_kukagramAccountAvatar->isHidden()
+		&& appearance.avatar) {
+		const auto &button = st::topBarCommunityInfoButton;
+		const auto photoLeft = (button.photoPosition.x() < 0)
+			? (_kukagramAccountAvatar->width() - button.photoSize) / 2
+			: button.photoPosition.x();
+		const auto photoTop = (button.photoPosition.y() < 0)
+			? (_kukagramAccountAvatar->height() - button.photoSize) / 2
+			: button.photoPosition.y();
+		const auto inset = st::lineWidth * 2;
+		const auto photoX = rtl()
+			? (_kukagramAccountAvatar->width() - photoLeft - button.photoSize)
+			: photoLeft;
+		const auto ring = QRect(
+			_kukagramAccountAvatar->x() + photoX - inset,
+			_kukagramAccountAvatar->y() + photoTop - inset,
+			button.photoSize + inset * 2,
+			button.photoSize + inset * 2);
+		p.setRenderHint(QPainter::Antialiasing, true);
+		p.setPen(QPen(QColor(161, 232, 195, 224), inset));
+		p.setBrush(Qt::NoBrush);
+		p.drawEllipse(ring);
 	}
 }
 
@@ -571,6 +703,11 @@ void TopBarWidget::paintTopBar(Painter &p) {
 			width(),
 			tr::lng_report_select_messages(tr::now));
 		return;
+	}
+	if (Core::KukagramAppearance::Current().studio) {
+		const auto inset = 3 * st::lineWidth;
+		p.fillRect(myrtlrect(0, height() / 4, inset, height() / 2),
+			Ui::Studio::Mint());
 	}
 
 	const auto now = crl::now();
@@ -901,6 +1038,7 @@ void TopBarWidget::setActiveChat(
 		!= activeChat.key.history());
 
 	_activeChat = activeChat;
+	startKukagramPulse();
 	_titlePeerText.clear();
 	_back->clearState();
 	update();
@@ -1109,6 +1247,7 @@ void TopBarWidget::refreshInfoButton() {
 
 void TopBarWidget::resizeEvent(QResizeEvent *e) {
 	updateSearchVisibility();
+	updateKukagramAvatarVisibility();
 	updateControlsGeometry();
 }
 
@@ -1279,13 +1418,19 @@ void TopBarWidget::updateControlsGeometry() {
 	}
 
 	_rightTaken = 0;
+	if (_kukagramAccountAvatar
+		&& !_kukagramAccountAvatar->isHidden()
+		&& Core::KukagramAppearance::Current().avatar) {
+		_kukagramAccountAvatar->moveToRight(_rightTaken, otherButtonsTop);
+		_rightTaken += _kukagramAccountAvatar->width() + st::topBarSkip;
+	}
 	if (rootChatsListBar() && _activeChat.key.folder()) {
 		const auto &toggle = st::topBarMenuToggle;
 		const auto narrowLeft = (_narrowWidth - toggle.icon.width()) / 2
 			- toggle.iconPosition.x();
 		_menuToggle->moveToLeft(
 			anim::interpolate(
-				width() - _menuToggle->width(),
+				width() - _menuToggle->width() - _rightTaken,
 				narrowLeft,
 				_narrowRatio),
 			otherButtonsTop);
@@ -1332,6 +1477,7 @@ void TopBarWidget::setAnimatingMode(bool enabled) {
 }
 
 void TopBarWidget::updateControlsVisibility() {
+	updateKukagramAvatarVisibility();
 	if (!_activeChat.key) {
 		return;
 	} else if (_animatingMode) {
@@ -1782,6 +1928,7 @@ void TopBarWidget::setGeometryWithNarrowRatio(
 	const auto resized = (size() != geometry.size());
 	_narrowRatio = narrowRatio;
 	_narrowWidth = narrowWidth;
+	updateKukagramAvatarVisibility();
 	if (started || finished) {
 		updateControlsVisibility();
 	}
@@ -1797,6 +1944,7 @@ bool TopBarWidget::showSelectedActions() const {
 }
 
 void TopBarWidget::slideAnimationCallback() {
+	updateKukagramAvatarVisibility();
 	if (!_selectedShown.animating() && !_searchShown.animating()) {
 		updateControlsVisibility();
 	}
