@@ -144,6 +144,10 @@ protected:
 private:
 	struct EmojiInteractionSeenAnimation;
 
+	void refreshKukagramAvatar();
+	void updateKukagramAvatarVisibility();
+	void startKukagramPulse();
+
 	[[nodiscard]] bool rootChatsListBar() const;
 	[[nodiscard]] bool communityChatsListBar() const;
 	[[nodiscard]] bool communityUserpicShown() const;
@@ -251,6 +255,8 @@ private:
 	object_ptr<Ui::IconButton> _cancelChoose;
 	object_ptr<Ui::UnreadBadge> _unreadBadge = { nullptr };
 	object_ptr<Ui::AbstractButton> _info = { nullptr };
+	object_ptr<Ui::AbstractButton> _kukagramAccountAvatar = { nullptr };
+	Ui::Animations::Simple _kukagramPulse;
 
 	object_ptr<Ui::IconButton> _call;
 	object_ptr<Ui::IconButton> _groupCall;

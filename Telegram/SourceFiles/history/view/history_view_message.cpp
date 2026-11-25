@@ -1970,6 +1970,12 @@ void Message::draw(Painter &p, const PaintContext &context) const {
 		if (from && (_fromNameVersion < from->nameVersion())) {
 			fromNameUpdated(g.width());
 		}
+		const auto rich = const_cast<Message*>(this)->richpage();
+		const auto plainBubble = !media
+			&& !rich
+			&& !keyboard
+			&& !hasCommentsButton();
+		const auto textBubbleDiameter = 2 * Ui::KukagramTextBubbleRadiusLarge();
 		const auto simple = Ui::SimpleBubble{
 			.st = context.st,
 			.geometry = g,
@@ -1978,9 +1984,12 @@ void Message::draw(Painter &p, const PaintContext &context) const {
 			.outerWidth = width(),
 			.selected = context.selected(),
 			.outbg = context.outbg,
+			.allowRoundedText = plainBubble
+				&& (g.width() >= textBubbleDiameter)
+				&& (g.height() >= textBubbleDiameter),
+			.allowStudioText = plainBubble,
 			.rounding = countBubbleRounding(messageRounding),
 		};
-		const auto rich = const_cast<Message*>(this)->richpage();
 		auto richPageGaps = std::vector<Ui::BubbleSelectionInterval>();
 		if (rich && rich->hasUnsupportedBlocks) {
 			auto richTrect = QRect();

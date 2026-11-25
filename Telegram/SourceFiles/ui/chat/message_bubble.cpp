@@ -7,12 +7,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ui/chat/message_bubble.h"
 
-#include "ui/cached_round_corners.h"
-#include "ui/image/image_prepare.h"
+#include "core/kukagram_appearance.h"
+#include "ui/chat/studio_paint.h"
 #include "ui/chat/chat_style.h"
 #include "ui/chat/torn_edge.h"
+#include "ui/image/image_prepare.h"
+#include "ui/cached_round_corners.h"
 #include "styles/style_chat.h"
 #include "styles/style_chat_style.h"
+
+#include <QtGui/QPainterPath>
 
 namespace Ui {
 namespace {
@@ -25,6 +29,40 @@ using Corner = BubbleCornerRounding;
 		&& args.pattern
 		&& !args.patternViewport.isEmpty()
 		&& !args.pattern->pixmap.size().isEmpty();
+}
+
+[[nodiscard]] bool UseRoundedText(const SimpleBubble &args) {
+	return args.allowRoundedText
+		&& Core::KukagramAppearance::Current().bubbles;
+}
+
+[[nodiscard]] const QPixmap &PatternPixmap(const SimpleBubble &args) {
+	const auto pattern = args.pattern;
+	if (!Core::KukagramAppearance::Current().bubbles) {
+		return pattern->pixmap;
+	}
+	const auto key = pattern->pixmap.cacheKey();
+	if (pattern->kukagramPixmapSourceKey != key
+		|| pattern->kukagramPixmap.isNull()) {
+		auto tinted = pattern->pixmap.copy();
+		if (tinted.isNull()) {
+			return pattern->pixmap;
+		}
+		auto p = QPainter(&tinted);
+		if (!p.isActive()) {
+			return pattern->pixmap;
+		}
+		p.setCompositionMode(QPainter::CompositionMode_SourceAtop);
+		p.fillRect(
+			QRect(QPoint(), pattern->pixmap.deviceIndependentSize().toSize()),
+			QColor(155, 223, 191, 24));
+		if (!p.end()) {
+			return pattern->pixmap;
+		}
+		pattern->kukagramPixmap = std::move(tinted);
+		pattern->kukagramPixmapSourceKey = key;
+	}
+	return pattern->kukagramPixmap;
 }
 
 [[nodiscard]] float64 PatternBubbleOpacity(
@@ -99,7 +137,9 @@ void PaintBubbleGeneric(
 		: bottomWithTailRight;
 	const auto rect = args.geometry;
 	const auto small = BubbleRadiusSmall();
-	const auto large = BubbleRadiusLarge();
+	const auto large = UseRoundedText(args)
+		? KukagramTextBubbleRadiusLarge()
+		: BubbleRadiusLarge();
 	const auto cornerSize = [&](Corner corner) {
 		return (corner == Corner::Large)
 			? large
@@ -222,7 +262,7 @@ void PaintPatternBubble(QPainter &p, const SimpleBubble &args) {
 			PaintPatternBubblePart(
 				p,
 				args.patternViewport,
-				pattern->pixmap,
+				PatternPixmap(args),
 				fill);
 		}
 	};
@@ -239,16 +279,23 @@ void PaintPatternBubble(QPainter &p, const SimpleBubble &args) {
 		PaintPatternBubblePart(
 			p,
 			args.patternViewport,
-			pattern->pixmap,
+			PatternPixmap(args),
 			QRect(QPoint(x, y), mask.size() / int(mask.devicePixelRatio())),
 			mask,
 			cache);
 	};
 	const auto fillCorner = [&](int x, int y, int index, Corner size) {
-		auto &corner = (size == Corner::Large)
+		const auto text = (size == Corner::Large) && UseRoundedText(args);
+		const auto &corner = text
+			? pattern->cornersLargeText[index]
+			: (size == Corner::Large)
 			? pattern->cornersLarge[index]
 			: pattern->cornersSmall[index];
-		auto &cache = (size == Corner::Large)
+		auto &cache = text
+			? (index < 2
+				? pattern->cornerTopTextCache
+				: pattern->cornerBottomTextCache)
+			: (size == Corner::Large)
 			? (index < 2
 				? pattern->cornerTopLargeCache
 				: pattern->cornerBottomLargeCache)
@@ -270,10 +317,10 @@ void PaintPatternBubble(QPainter &p, const SimpleBubble &args) {
 
 void PaintSolidBubble(QPainter &p, const SimpleBubble &args) {
 	const auto &st = args.st->messageStyle(args.outbg, args.selected);
-	const auto &bg = st.msgBg;
-	const auto sh = (args.rounding.bottomRight == Corner::None)
-		? nullptr
-		: &st.msgShadow;
+	const auto soft = Core::KukagramAppearance::Current().bubbles
+		&& !args.selected;
+	const auto roundedText = UseRoundedText(args);
+	const auto &bg = soft ? st.kukagramBg->color() : st.msgBg;
 	const auto &tail = (args.rounding.bottomRight == Corner::Tail)
 		? st.tailRight
 		: st.tailLeft;
@@ -284,16 +331,144 @@ void PaintSolidBubble(QPainter &p, const SimpleBubble &args) {
 	PaintBubbleGeneric(args, [&](const QRect &rect) {
 		p.fillRect(rect, bg);
 	}, [&](const QRect &rect) {
-		p.fillRect(rect, *sh);
+		if (args.rounding.bottomRight != Corner::None) {
+			p.fillRect(rect, st.msgShadow);
+		}
 	}, [&](int x, int y, int index, Corner size) {
-		auto &corners = (size == Corner::Large)
-			? st.msgBgCornersLarge
-			: st.msgBgCornersSmall;
+		const auto &corners = st.solidBubbleCorners(
+			size == Corner::Large, roundedText, soft);
 		p.drawPixmap(x, y, corners.p[index]);
 	}, [&](const QPoint &bottomPosition) {
-		tail.paint(p, bottomPosition - tailShift, args.outerWidth);
+		if (soft) {
+			tail.paint(p, bottomPosition - tailShift, args.outerWidth, bg->c);
+		} else {
+			tail.paint(p, bottomPosition - tailShift, args.outerWidth);
+		}
 		return tail.width();
 	});
+}
+
+[[nodiscard]] QPainterPath StudioBubblePath(
+		const QRect &rect,
+		int topLeft,
+		int topRight,
+		int bottomLeft,
+		int bottomRight) {
+	const auto x = rect.x();
+	const auto y = rect.y();
+	const auto right = x + rect.width();
+	const auto bottom = y + rect.height();
+	auto path = QPainterPath();
+	path.moveTo(x + topLeft, y);
+	path.lineTo(right - topRight, y);
+	if (topRight) {
+		path.arcTo(
+			right - 2 * topRight, y, 2 * topRight, 2 * topRight, 90, -90);
+	}
+	path.lineTo(right, bottom - bottomRight);
+	if (bottomRight) {
+		path.arcTo(
+			right - 2 * bottomRight,
+			bottom - 2 * bottomRight,
+			2 * bottomRight,
+			2 * bottomRight,
+			0,
+			-90);
+	}
+	path.lineTo(x + bottomLeft, bottom);
+	if (bottomLeft) {
+		path.arcTo(
+			x, bottom - 2 * bottomLeft, 2 * bottomLeft, 2 * bottomLeft, 270, -90);
+	}
+	path.lineTo(x, y + topLeft);
+	if (topLeft) {
+		path.arcTo(x, y, 2 * topLeft, 2 * topLeft, 180, -90);
+	}
+	path.closeSubpath();
+	return path;
+}
+
+void PaintStudioEdge(
+		QPainter &p,
+		const SimpleBubble &args,
+		int topLeft,
+		int topRight) {
+	const auto left = args.geometry.x() + topLeft + 2 * st::lineWidth;
+	const auto right = args.geometry.x() + args.geometry.width()
+		- topRight - 2 * st::lineWidth;
+	if ((!topLeft && !topRight) || right <= left) {
+		return;
+	}
+	auto edge = QLinearGradient(left, 0, right, 0);
+	edge.setColorAt(0., Qt::transparent);
+	edge.setColorAt(args.outbg ? 0.7 : 0.3,
+		args.outbg ? Studio::Violet(182) : Studio::Mint(176));
+	edge.setColorAt(1., Qt::transparent);
+	p.fillRect(QRect(left, args.geometry.y(), right - left, st::lineWidth), edge);
+}
+
+[[nodiscard]] bool PaintStudioBubble(QPainter &p, const SimpleBubble &args) {
+	if (args.selected
+		|| !args.allowStudioText
+		|| !Core::KukagramAppearance::Current().studio
+		|| args.geometry.isEmpty()) {
+		return false;
+	}
+	const auto &style = args.st->messageStyle(args.outbg, false);
+	if (!style.studioBg) {
+		return false;
+	}
+	const auto &[start, end] = *style.studioBg;
+	const auto rect = args.geometry;
+	const auto rounding = args.rounding;
+	const auto rounded = UseRoundedText(args);
+	const auto radius = [&](Corner corner) {
+		const auto max = std::min(rect.width(), rect.height()) / 2;
+		return (rounded && corner == Corner::Large)
+			? std::min(max, KukagramTextBubbleRadiusLarge())
+			: std::min(max, BubbleCornerRadius(corner));
+	};
+	const auto topLeft = radius(rounding.topLeft);
+	const auto topRight = radius(rounding.topRight);
+	const auto path = StudioBubblePath(
+		rect,
+		topLeft,
+		topRight,
+		radius(rounding.bottomLeft),
+		radius(rounding.bottomRight));
+	const auto left = rect.x();
+	const auto right = left + rect.width();
+	const auto bottom = rect.y() + rect.height();
+	auto fill = QLinearGradient(left, 0, right, 0);
+	fill.setColorAt(0., start);
+	fill.setColorAt(1., end);
+	p.save();
+	p.setRenderHint(QPainter::Antialiasing);
+	if (args.shadowed && rounding.bottomRight != Corner::None) {
+		p.translate(0, st::msgShadow);
+		p.fillPath(path, style.msgShadow->b);
+		p.translate(0, -st::msgShadow);
+	}
+	p.fillPath(path, fill);
+	PaintStudioEdge(p, args, topLeft, topRight);
+	if (rounding.bottomLeft == Corner::Tail) {
+		const auto &tail = style.tailLeft;
+		tail.paint(
+			p,
+			QPoint(left - tail.width(), bottom - tail.height()),
+			args.outerWidth,
+			start);
+	}
+	if (rounding.bottomRight == Corner::Tail) {
+		const auto &tail = style.tailRight;
+		tail.paint(
+			p,
+			QPoint(right, bottom - tail.height()),
+			args.outerWidth,
+			end);
+	}
+	p.restore();
+	return true;
 }
 
 } // namespace
@@ -303,6 +478,8 @@ std::unique_ptr<BubblePattern> PrepareBubblePattern(
 	auto result = std::make_unique<Ui::BubblePattern>();
 	result->cornersSmall = Images::CornersMask(BubbleRadiusSmall());
 	result->cornersLarge = Images::CornersMask(BubbleRadiusLarge());
+	result->cornersLargeText = Images::CornersMask(
+		KukagramTextBubbleRadiusLarge());
 	const auto addShadow = [&](QImage &bottomCorner) {
 		auto result = QImage(
 			bottomCorner.width(),
@@ -348,7 +525,18 @@ void FinishBubblePatternOnMain(not_null<BubblePattern*> pattern) {
 void PaintBubble(QPainter &p, const SimpleBubble &args) {
 	if (UsePatternBubble(args)) {
 		PaintPatternBubble(p, args);
-	} else {
+		if (args.allowStudioText && Core::KukagramAppearance::Current().studio) {
+			const auto rounded = UseRoundedText(args);
+			const auto radius = [&](Corner corner) {
+				return (rounded && corner == Corner::Large)
+					? KukagramTextBubbleRadiusLarge()
+					: BubbleCornerRadius(corner);
+			};
+			PaintStudioEdge(p, args,
+				radius(args.rounding.topLeft),
+				radius(args.rounding.topRight));
+		}
+	} else if (!PaintStudioBubble(p, args)) {
 		PaintSolidBubble(p, args);
 	}
 }
@@ -422,7 +610,7 @@ void PaintBubble(QPainter &p, const BubbleWithGaps &args) {
 			PaintPatternBubblePart(
 				p,
 				args.simple.patternViewport,
-				args.simple.pattern->pixmap,
+				PatternPixmap(args.simple),
 				target,
 				mask,
 				patternCache);
@@ -431,7 +619,10 @@ void PaintBubble(QPainter &p, const BubbleWithGaps &args) {
 			const auto &st = args.simple.st->messageStyle(
 				args.simple.outbg,
 				args.simple.selected);
-			const auto color = st.msgBg->c;
+			const auto color = (Core::KukagramAppearance::Current().bubbles
+				&& !args.simple.selected)
+				? st.kukagramBg->color()->c
+				: st.msgBg->c;
 			if (solidCache.size() != mask.size() || solidColor != color) {
 				if (solidCache.size() != mask.size()) {
 					solidCache = QImage(

@@ -6,6 +6,8 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/application.h"
+#include "core/kukagram_appearance.h"
+#include "ui/chat/studio_paint.h"
 
 #include "data/data_abstract_structure.h"
 #include "data/data_channel.h"
@@ -100,7 +102,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/keys_legend.h"
 #include "base/qthelp_regex.h"
 #include "base/qthelp_url.h"
-#include "boxes/premium_limits_box.h"
 #include "ui/accessible/ui_accessible_factory.h"
 #include "ui/boxes/confirm_box.h"
 #include "core/cached_webview_availability.h"
@@ -110,6 +111,29 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QMimeDatabase>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
+#include <QtGui/QKeyEvent>
+#include <QtGui/QKeySequence>
+#include <QtGui/QPainter>
+#include <QtGui/QPainterPath>
+#include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QSettings>
+#include <QtWidgets/QFormLayout>
+#include <QtWidgets/QGroupBox>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QDialogButtonBox>
+#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
+#include <QtWidgets/QListWidget>
+#include <QtWidgets/QMessageBox>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QVBoxLayout>
+
+#include <array>
+#include <optional>
 
 #include <ksandbox.h>
 
@@ -119,6 +143,529 @@ namespace {
 constexpr auto kQuitPreventTimeoutMs = crl::time(1500);
 constexpr auto kAutoLockTimeoutLateMs = crl::time(3000);
 constexpr auto kClearEmojiImageSourceTimeout = 10 * crl::time(1000);
+
+#ifdef Q_OS_MAC
+enum class KukagramAction : int {
+	Next,
+	Previous,
+	Preferences,
+	Count,
+};
+
+struct KukagramShortcut {
+	int key = 0;
+	quint32 physicalKey = 0;
+	Qt::KeyboardModifiers modifiers = Qt::NoModifier;
+	QString label;
+	bool physicalKeyKnown = false;
+};
+
+using KukagramShortcuts = std::array<KukagramShortcut, 3>;
+
+[[nodiscard]] bool HasKukagramPhysicalKey(const KukagramShortcut &binding) {
+	return binding.physicalKeyKnown || binding.physicalKey;
+}
+
+[[nodiscard]] bool HasKukagramNativeKeyData(const QKeyEvent *event) {
+	return event->nativeScanCode()
+		|| event->nativeVirtualKey()
+		|| event->nativeModifiers();
+}
+
+[[nodiscard]] bool ValidKukagramShortcut(const KukagramShortcut &binding) {
+	const auto key = binding.key;
+	const auto mods = binding.modifiers;
+	const auto allowed = Qt::ControlModifier | Qt::AltModifier
+		| Qt::MetaModifier | Qt::ShiftModifier;
+	return key > 0
+		&& key != Qt::Key_unknown
+		&& key != Qt::Key_Control && key != Qt::Key_Meta
+		&& key != Qt::Key_Alt && key != Qt::Key_Shift
+		&& !(mods & ~allowed)
+		&& ((mods & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
+			|| (key >= Qt::Key_F1 && key <= Qt::Key_F12));
+}
+
+[[nodiscard]] QString KukagramShortcutFile() {
+	return cWorkingDir() + u"keyboard-shortcuts.ini"_q;
+}
+
+[[nodiscard]] QString ShortcutLabel(const KukagramShortcut &binding) {
+	return binding.label.isEmpty()
+		? QKeySequence(int(binding.modifiers) | binding.key
+			).toString(QKeySequence::NativeText)
+		: binding.label;
+}
+
+[[nodiscard]] KukagramShortcuts ReadKukagramShortcuts() {
+	auto result = KukagramShortcuts{ {
+		{ Qt::Key_Right, 0, Qt::ControlModifier | Qt::AltModifier, {} },
+		{ Qt::Key_Left, 0, Qt::ControlModifier | Qt::AltModifier, {} },
+		{ Qt::Key_N, 0x2D, Qt::ControlModifier | Qt::ShiftModifier, {} },
+	} };
+	const auto defaults = result;
+	const auto file = KukagramShortcutFile();
+	if (!QFileInfo::exists(file)) {
+		return result;
+	}
+	const auto settings = QSettings(file, QSettings::IniFormat);
+	const auto keys = { u"next"_q, u"previous"_q, u"preferences"_q };
+	auto i = 0;
+	for (const auto &name : keys) {
+		const auto prefix = name + u"/"_q;
+		if (settings.contains(prefix + u"key"_q)) {
+			auto &binding = result[i];
+			auto keyValid = false;
+			auto physicalValid = false;
+			auto modifiersValid = false;
+			binding.key = settings.value(prefix + u"key"_q).toInt(&keyValid);
+			binding.physicalKey = settings.value(
+				prefix + u"physical"_q).toUInt(&physicalValid);
+			binding.modifiers = Qt::KeyboardModifiers::fromInt(
+				settings.value(prefix + u"modifiers"_q).toInt(&modifiersValid));
+			binding.label = settings.value(prefix + u"label"_q).toString();
+			binding.physicalKeyKnown = settings.value(
+				prefix + u"physicalKnown"_q,
+				binding.physicalKey != 0 || !binding.label.isEmpty()).toBool();
+			if (!keyValid || !physicalValid || !modifiersValid
+				|| !ValidKukagramShortcut(binding)) {
+				binding = defaults[i];
+			}
+		}
+		++i;
+	}
+	return result;
+}
+
+KukagramShortcuts &CurrentKukagramShortcuts() {
+	static auto bindings = ReadKukagramShortcuts();
+	return bindings;
+}
+
+[[nodiscard]] bool SaveKukagramShortcuts(
+		const KukagramShortcuts &bindings) {
+	if (!ranges::all_of(bindings, ValidKukagramShortcut)) {
+		return false;
+	}
+	const auto file = KukagramShortcutFile();
+	if (!QDir().mkpath(QFileInfo(file).absolutePath())) {
+		return false;
+	}
+	auto settings = QSettings(file, QSettings::IniFormat);
+	const auto keys = { u"next"_q, u"previous"_q, u"preferences"_q };
+	auto i = 0;
+	for (const auto &name : keys) {
+		const auto prefix = name + u"/"_q;
+		const auto &binding = bindings[i++];
+		settings.setValue(prefix + u"key"_q, binding.key);
+		settings.setValue(prefix + u"physical"_q, binding.physicalKey);
+		settings.setValue(prefix + u"physicalKnown"_q, HasKukagramPhysicalKey(binding));
+		settings.setValue(prefix + u"modifiers"_q, int(binding.modifiers));
+		settings.setValue(prefix + u"label"_q, binding.label);
+	}
+	settings.sync();
+	if (settings.status() != QSettings::NoError) {
+		return false;
+	}
+	QFile::setPermissions(file, QFileDevice::ReadUser | QFileDevice::WriteUser);
+	CurrentKukagramShortcuts() = bindings;
+	return true;
+}
+
+[[nodiscard]] bool ShortcutMatches(
+		const QKeyEvent *event,
+		const KukagramShortcut &binding) {
+	if (!binding.key || event->isAutoRepeat()
+		|| (event->modifiers() & ~Qt::KeypadModifier)
+			!= binding.modifiers) {
+		return false;
+	}
+	const auto pressedPhysical = event->nativeVirtualKey();
+	return (HasKukagramPhysicalKey(binding) && HasKukagramNativeKeyData(event))
+		? (binding.physicalKey == pressedPhysical)
+		: (event->key() == binding.key);
+}
+
+[[nodiscard]] std::optional<KukagramAction> MatchKukagramShortcut(
+		const QKeyEvent *event) {
+	const auto &bindings = CurrentKukagramShortcuts();
+	for (auto i = 0; i != int(KukagramAction::Count); ++i) {
+		if (ShortcutMatches(event, bindings[i])) {
+			return KukagramAction(i);
+		}
+	}
+	return std::nullopt;
+}
+
+class KukagramRecorder final : public QPushButton {
+public:
+	KukagramRecorder(KukagramShortcut *binding, QWidget *parent)
+	: QPushButton(parent)
+	, _binding(binding) {
+		setFocusPolicy(Qt::StrongFocus);
+		setText(ShortcutLabel(*_binding));
+		QObject::connect(this, &QPushButton::clicked, this, [=] {
+			_recording = true;
+			setText(u"Нажми сочетание клавиш..."_q);
+			setFocus(Qt::OtherFocusReason);
+		});
+	}
+
+protected:
+	void keyPressEvent(QKeyEvent *event) override {
+		if (!_recording) {
+			QPushButton::keyPressEvent(event);
+			return;
+		}
+		const auto key = event->key();
+		if (key == Qt::Key_Escape) {
+			_recording = false;
+			setText(ShortcutLabel(*_binding));
+			event->accept();
+			return;
+		}
+		if (key == Qt::Key_Control || key == Qt::Key_Meta
+			|| key == Qt::Key_Alt || key == Qt::Key_Shift
+			|| key == Qt::Key_unknown) {
+			event->accept();
+			return;
+		}
+		const auto mods = event->modifiers() & ~Qt::KeypadModifier;
+		if (!(mods & (Qt::ControlModifier | Qt::AltModifier
+				| Qt::MetaModifier))
+			&& !(key >= Qt::Key_F1 && key <= Qt::Key_F12)) {
+			setText(u"Нужен ⌘/⌥/Control + клавиша или F1–F12"_q);
+			event->accept();
+			return;
+		}
+		_binding->key = key;
+		_binding->physicalKey = event->nativeVirtualKey();
+		_binding->physicalKeyKnown = HasKukagramNativeKeyData(event);
+		_binding->modifiers = mods;
+		_binding->label = QKeySequence(int(mods) | key
+			).toString(QKeySequence::NativeText);
+		_recording = false;
+		setText(ShortcutLabel(*_binding));
+		event->accept();
+	}
+
+private:
+	KukagramShortcut *_binding = nullptr;
+	bool _recording = false;
+};
+
+class KukagramSettingsDialog final : public QDialog {
+public:
+	explicit KukagramSettingsDialog(QWidget *parent)
+	: QDialog(parent) {
+		setAttribute(Qt::WA_DeleteOnClose);
+		setAttribute(Qt::WA_QuitOnClose, false);
+		setWindowModality(Qt::ApplicationModal);
+		QObject::connect(QCoreApplication::instance(),
+			&QCoreApplication::aboutToQuit, this, &QDialog::reject);
+		QObject::connect(&Core::App(),
+			&QObject::destroyed, this, &QDialog::reject);
+		Core::App().passcodeLockChanges(
+		) | rpl::filter([](bool locked) { return locked; }) | rpl::on_next([=] {
+			reject();
+		}, _lifetime);
+	}
+
+private:
+	rpl::lifetime _lifetime;
+};
+
+void ShowKukagramWarning(not_null<QDialog*> parent, const QString &text) {
+	const auto box = new QMessageBox(
+		QMessageBox::Warning, u"kukagram"_q, text, QMessageBox::Ok, parent);
+	box->setAttribute(Qt::WA_DeleteOnClose);
+	box->open();
+}
+
+void ShowKukagramNotificationAccountsDialog(not_null<Main::Domain*> domain) {
+	const auto weakDomain = base::make_weak(domain);
+	const auto dialog = new KukagramSettingsDialog(QApplication::activeWindow());
+	dialog->setWindowTitle(u"kukagram — аккаунты и горячие клавиши"_q);
+	auto layout = new QVBoxLayout(dialog);
+	auto description = new QLabel(
+		u"Отметь аккаунты, которым разрешены уведомления. "
+		u"Неотмеченные останутся авторизованными. "
+		u"После изменения списка новые аккаунты будут без уведомлений."_q,
+		dialog);
+	description->setWordWrap(true);
+	layout->addWidget(description);
+	auto search = new QLineEdit(dialog);
+	search->setPlaceholderText(u"Поиск по имени или номеру"_q);
+	layout->addWidget(search);
+	auto list = new QListWidget(dialog);
+	for (const auto &account : domain->storedAccounts()) {
+		if (!account.uniqueId) {
+			continue;
+		}
+		const auto name = account.name.isEmpty()
+			? u"Аккаунт %1"_q.arg(account.index + 1)
+			: account.name;
+		const auto label = account.phone.isEmpty()
+			? name
+			: name + u"  ·  "_q + account.phone;
+		auto item = new QListWidgetItem(label, list);
+		item->setData(Qt::UserRole, QVariant::fromValue(qulonglong(account.uniqueId)));
+		item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+		item->setCheckState(domain->notificationsAllowed(account.uniqueId)
+			? Qt::Checked : Qt::Unchecked);
+	}
+	layout->addWidget(list);
+	const auto notificationPolicyEdited = std::make_shared<bool>(false);
+	QObject::connect(list, &QListWidget::itemChanged, dialog, [=] {
+		*notificationPolicyEdited = true;
+	});
+	QObject::connect(search, &QLineEdit::textChanged, dialog,
+		[=](const QString &query) {
+			for (auto i = 0; i != list->count(); ++i) {
+				const auto item = list->item(i);
+				item->setHidden(!item->text().contains(
+					query, Qt::CaseInsensitive));
+			}
+		});
+	auto buttonsRow = new QHBoxLayout();
+	auto onlyCurrent = new QPushButton(u"Только текущий"_q, dialog);
+	auto none = new QPushButton(u"Выключить все"_q, dialog);
+	buttonsRow->addWidget(onlyCurrent);
+	buttonsRow->addWidget(none);
+	layout->addLayout(buttonsRow);
+	const auto active = domain->active().maybeSession();
+	const auto currentId = active ? active->uniqueId() : 0;
+	onlyCurrent->setEnabled(currentId != 0);
+	QObject::connect(onlyCurrent, &QPushButton::clicked, dialog, [=] {
+		*notificationPolicyEdited = true;
+		for (auto i = 0; i != list->count(); ++i) {
+			const auto item = list->item(i);
+			const auto id = item->data(Qt::UserRole).toULongLong();
+			item->setCheckState(id == currentId ? Qt::Checked : Qt::Unchecked);
+		}
+	});
+	QObject::connect(none, &QPushButton::clicked, dialog, [=] {
+		*notificationPolicyEdited = true;
+		for (auto i = 0; i != list->count(); ++i) {
+			list->item(i)->setCheckState(Qt::Unchecked);
+		}
+	});
+
+	const auto bindings = std::make_shared<KukagramShortcuts>(CurrentKukagramShortcuts());
+	auto keyGroup = new QGroupBox(u"Сочетания клавиш"_q, dialog);
+	auto keyLayout = new QFormLayout(keyGroup);
+	keyLayout->addRow(u"Следующий аккаунт:"_q,
+		new KukagramRecorder(&(*bindings)[0], keyGroup));
+	keyLayout->addRow(u"Предыдущий аккаунт:"_q,
+		new KukagramRecorder(&(*bindings)[1], keyGroup));
+	keyLayout->addRow(u"Открыть эти настройки:"_q,
+		new KukagramRecorder(&(*bindings)[2], keyGroup));
+	layout->addWidget(keyGroup);
+	auto hint = new QLabel(
+		u"Нажми кнопку сочетания, затем новые клавиши. "
+		u"На Mac запоминается физическая клавиша: русская и английская "
+		u"раскладки работают одинаково. "
+		u"Если другие разрешённые аккаунты должны уведомлять в фоне, "
+		u"открой каждый из них после запуска и включи "
+		u"общую опцию уведомлений от всех аккаунтов."_q,
+		dialog);
+	hint->setWordWrap(true);
+	layout->addWidget(hint);
+
+	auto actions = new QDialogButtonBox(
+		QDialogButtonBox::Save | QDialogButtonBox::Cancel,
+		Qt::Horizontal,
+		dialog);
+	layout->addWidget(actions);
+	QObject::connect(actions, &QDialogButtonBox::rejected,
+		dialog, &QDialog::reject);
+	QObject::connect(actions, &QDialogButtonBox::accepted, dialog, [=] {
+		const auto domain = weakDomain.get();
+		if (Core::Quitting() || !domain || !domain->started()
+			|| Core::App().passcodeLocked()) {
+			dialog->reject();
+			return;
+		}
+		for (auto i = 0; i != int(KukagramAction::Count); ++i) {
+			for (auto j = i + 1; j != int(KukagramAction::Count); ++j) {
+				if ((*bindings)[i].modifiers == (*bindings)[j].modifiers
+					&& ((HasKukagramPhysicalKey((*bindings)[i])
+						&& HasKukagramPhysicalKey((*bindings)[j]))
+						? (*bindings)[i].physicalKey == (*bindings)[j].physicalKey
+						: (*bindings)[i].key == (*bindings)[j].key)) {
+					ShowKukagramWarning(dialog,
+						u"Одно сочетание назначено двум действиям."_q);
+					return;
+				}
+			}
+		}
+		auto allowed = std::vector<uint64>();
+		for (auto i = 0; i != list->count(); ++i) {
+			const auto item = list->item(i);
+			if (item->checkState() == Qt::Checked) {
+				allowed.push_back(item->data(Qt::UserRole).toULongLong());
+			}
+		}
+		if (*notificationPolicyEdited && !domain->saveNotificationAllowlist(allowed)) {
+			ShowKukagramWarning(dialog,
+				u"Не удалось сохранить настройки уведомлений."_q);
+			return;
+		}
+		if (!SaveKukagramShortcuts(*bindings)) {
+			ShowKukagramWarning(dialog,
+				*notificationPolicyEdited
+					? u"Уведомления сохранены, но сочетания клавиш не записались."_q
+					: u"Не удалось сохранить сочетания клавиш."_q);
+			return;
+		}
+		dialog->accept();
+	});
+	dialog->show();
+}
+
+class KukagramStylePreview final : public QWidget {
+public:
+	explicit KukagramStylePreview(not_null<QWidget*> parent)
+	: QWidget(parent) {
+		setMinimumSize(320, 132);
+		setAccessibleName(u"Предпросмотр оформления чатов"_q);
+	}
+
+	void setStudio(bool enabled) {
+		_studio = enabled;
+		update();
+	}
+
+protected:
+	void paintEvent(QPaintEvent *) override {
+		auto painter = QPainter(this);
+		painter.setRenderHint(QPainter::Antialiasing);
+		const auto frame = QRectF(rect()).adjusted(1, 1, -1, -1);
+		auto clip = QPainterPath();
+		clip.addRoundedRect(frame, 13, 13);
+		painter.setClipPath(clip);
+		painter.setPen(Qt::NoPen);
+
+		const auto content = frame;
+		painter.fillRect(frame, QColor(27, 36, 49));
+		if (_studio) {
+			painter.fillRect(frame, Ui::Studio::Backdrop(frame));
+		}
+
+		const auto round = [&](QRectF area, const QBrush &brush, qreal radius) {
+			painter.setBrush(brush);
+			painter.drawRoundedRect(area, radius, radius);
+		};
+		const auto header = QRectF(
+			content.x(), content.y(), content.width(), 28);
+		painter.fillRect(header, QColor(39, 55, 71));
+		if (_studio) {
+			Ui::Studio::PaintHeader(painter, header, 2);
+			painter.fillRect(QRectF(header.x(), header.y() + 7, 3, 14),
+				Ui::Studio::Mint());
+		}
+		round(QRectF(header.x() + 12, header.y() + 11, 49, 5),
+			QColor(225, 227, 245, 205), 2.5);
+		const auto bubble = [&](const QRectF &area, bool outgoing, QColor base) {
+			auto fill = QLinearGradient(area.topLeft(), area.topRight());
+			const auto colors = Ui::Studio::BubbleColors(true, outgoing);
+			fill.setColorAt(0., _studio ? colors[0] : base);
+			fill.setColorAt(1., _studio ? colors[1] : base);
+			round(area, fill, 9);
+		};
+
+		const auto incoming = QRectF(content.x() + 12, content.y() + 40,
+			content.width() * 0.49, 30);
+		bubble(incoming, false, QColor(38, 63, 82));
+		round(incoming.adjusted(11, 13, -17, -12), QColor(229, 231, 247, 194), 2.5);
+		const auto outgoingWidth = content.width() * 0.53;
+		const auto outgoing = QRectF(content.right() - outgoingWidth - 12,
+			content.y() + 79, outgoingWidth, 32);
+		bubble(outgoing, true, QColor(48, 94, 135));
+		round(outgoing.adjusted(13, 14, -19, -13), QColor(245, 237, 255, 218), 2.5);
+	}
+
+private:
+	bool _studio = true;
+};
+
+void ShowKukagramAppearanceDialog() {
+	const auto dialog = new KukagramSettingsDialog(QApplication::activeWindow());
+	dialog->setWindowTitle(u"kukagram — внешний вид"_q);
+	auto layout = new QVBoxLayout(dialog);
+	const auto original = KukagramAppearance::Current();
+	auto studio = new QCheckBox(u"Оформление Studio"_q, dialog);
+	auto studioFont = studio->font();
+	studioFont.setBold(true);
+	studio->setFont(studioFont);
+	studio->setChecked(original.studio);
+	layout->addWidget(studio);
+	auto preview = new KukagramStylePreview(dialog);
+	preview->setStudio(original.studio);
+	layout->addWidget(preview);
+	QObject::connect(studio, &QCheckBox::toggled, preview, [=](bool enabled) {
+		preview->setStudio(enabled);
+	});
+
+	auto legacy = new QGroupBox(u"Отдельные эффекты"_q, dialog);
+	auto legacyLayout = new QVBoxLayout(legacy);
+	auto colors = new QCheckBox(u"Фиолетово-мятные акценты интерфейса"_q, dialog);
+	auto bubbles = new QCheckBox(u"Мягкие цвета и скругления текстовых сообщений"_q, dialog);
+	auto animations = new QCheckBox(u"Лёгкие анимации при смене чата"_q, dialog);
+	auto avatar = new QCheckBox(u"Аватарка аккаунта с мятным ободком"_q, dialog);
+	colors->setChecked(original.colors);
+	bubbles->setChecked(original.bubbles);
+	animations->setChecked(original.animations);
+	avatar->setChecked(original.avatar);
+	for (auto checkbox : { colors, bubbles, animations, avatar }) {
+		legacyLayout->addWidget(checkbox);
+	}
+	layout->addWidget(legacy);
+	auto row = new QHBoxLayout();
+	auto allOff = new QPushButton(u"Выключить всё"_q, dialog);
+	auto allOn = new QPushButton(u"Включить всё"_q, dialog);
+	row->addWidget(allOff);
+	row->addWidget(allOn);
+	layout->addLayout(row);
+	QObject::connect(allOff, &QPushButton::clicked, dialog, [=] {
+		for (auto checkbox : { studio, colors, bubbles, animations, avatar }) {
+			checkbox->setChecked(false);
+		}
+	});
+	QObject::connect(allOn, &QPushButton::clicked, dialog, [=] {
+		for (auto checkbox : { studio, colors, bubbles, animations, avatar }) {
+			checkbox->setChecked(true);
+		}
+	});
+	auto actions = new QDialogButtonBox(
+		QDialogButtonBox::Save | QDialogButtonBox::Cancel,
+		Qt::Horizontal, dialog);
+	layout->addWidget(actions);
+	QObject::connect(actions, &QDialogButtonBox::rejected,
+		dialog, &QDialog::reject);
+	QObject::connect(actions, &QDialogButtonBox::accepted, dialog, [=] {
+		if (Core::Quitting() || Core::App().passcodeLocked()) {
+			dialog->reject();
+			return;
+		}
+		const auto values = KukagramAppearance::Values{
+			colors->isChecked(),
+			bubbles->isChecked(),
+			animations->isChecked(),
+			avatar->isChecked(),
+			studio->isChecked(),
+		};
+		if (!KukagramAppearance::Save(values)) {
+			ShowKukagramWarning(dialog,
+				u"Не удалось сохранить внешний вид."_q);
+			return;
+		}
+		dialog->accept();
+	});
+	dialog->show();
+}
+
+#endif // Q_OS_MAC
 
 LaunchState GlobalLaunchState/* = LaunchState::Running*/;
 
@@ -402,31 +949,6 @@ void Application::run() {
 		showAccount(account);
 	}, _lifetime);
 
-	(
-		_domain->activeValue(
-		) | rpl::to_empty | rpl::filter([=] {
-			return _domain->started();
-		}) | rpl::take(1)
-	) | rpl::then(
-		_domain->accountsChanges()
-	) | rpl::map([=] {
-		return (_domain->accounts().size() > Main::Domain::kMaxAccounts)
-			? _domain->activeChanges()
-			: rpl::never<not_null<Main::Account*>>();
-	}) | rpl::flatten_latest(
-	) | rpl::on_next([=](not_null<Main::Account*> account) {
-		const auto ordered = _domain->orderedAccounts();
-		const auto it = ranges::find(ordered, account);
-		if (_lastActivePrimaryWindow && it != end(ordered)) {
-			const auto index = std::distance(begin(ordered), it);
-			if ((index + 1) > _domain->maxAccounts()) {
-				_lastActivePrimaryWindow->show(Box(
-					AccountsLimitBox,
-					&account->session()));
-			}
-		}
-	}, _lifetime);
-
 	QCoreApplication::instance()->installEventFilter(this);
 
 	appDeactivatedValue(
@@ -664,6 +1186,37 @@ void Application::createTray() {
 	}, _lifetime);
 }
 
+void Application::showKukagramPreferences() {
+#ifdef Q_OS_MAC
+	if (!_domain || !_domain->started() || passcodeLocked() || Core::Quitting()) {
+		return;
+	}
+	if (const auto modal = QApplication::activeModalWidget()) {
+		modal->raise();
+		modal->activateWindow();
+		return;
+	}
+	activate();
+	ShowKukagramNotificationAccountsDialog(not_null(_domain.get()));
+#endif // Q_OS_MAC
+}
+
+
+void Application::showKukagramAppearance() {
+#ifdef Q_OS_MAC
+	if (!_domain || !_domain->started() || passcodeLocked() || Core::Quitting()) {
+		return;
+	}
+	if (const auto modal = QApplication::activeModalWidget()) {
+		modal->raise();
+		modal->activateWindow();
+		return;
+	}
+	activate();
+	ShowKukagramAppearanceDialog();
+#endif // Q_OS_MAC
+}
+
 void Application::activate() {
 	for (const auto &window : _windowStack) {
 		if (window == _lastActiveWindow) {
@@ -730,6 +1283,24 @@ bool Application::eventFilter(QObject *object, QEvent *e) {
 		updateNonIdle();
 		_inAppKeyPressed.fire({});
 		const auto event = static_cast<QKeyEvent*>(e);
+#ifdef Q_OS_MAC
+		if (!QApplication::activeModalWidget()
+			&& !QApplication::activePopupWidget()
+			&& _domain->started() && !passcodeLocked()) {
+			if (const auto action = MatchKukagramShortcut(event)) {
+				if (*action == KukagramAction::Next
+					|| *action == KukagramAction::Previous) {
+					_domain->cycleStoredAccount(
+						*action == KukagramAction::Next ? 1 : -1);
+				} else {
+					InvokeQueued(this, [=] {
+						showKukagramPreferences();
+					});
+				}
+				return true;
+			}
+		}
+#endif // Q_OS_MAC
 		if (base::Platform::GlobalShortcuts::IsToggleFullScreenKey(event)
 			&& toggleActiveWindowFullScreen()) {
 			return true;
@@ -753,6 +1324,17 @@ bool Application::eventFilter(QObject *object, QEvent *e) {
 	} break;
 
 	case QEvent::ShortcutOverride: {
+#ifdef Q_OS_MAC
+		if (_domain->started() && !passcodeLocked()
+			&& !QApplication::activeModalWidget()
+			&& !QApplication::activePopupWidget()) {
+			const auto event = static_cast<QKeyEvent*>(e);
+			if (MatchKukagramShortcut(event)) {
+				event->accept();
+				return true;
+			}
+		}
+#endif // Q_OS_MAC
 		// Ctrl+Tab/Ctrl+Shift+Tab chat switch is a special shortcut case,
 		// because it not only does an action on the shortcut activation,
 		// but also keeps the UI visible until you release the Ctrl key.
@@ -981,10 +1563,9 @@ void Application::startLocalStorage() {
 
 void Application::startEmojiImageLoader() {
 	_emojiImageLoader.with([
-		source = prepareEmojiSourceImages(),
-		large = settings().largeEmoji()
+		source = prepareEmojiSourceImages()
 	](Stickers::EmojiImageLoader &loader) mutable {
-		loader.init(std::move(source), large);
+		loader.switchTo(std::move(source));
 	});
 
 	settings().largeEmojiChanges(
@@ -1167,17 +1748,18 @@ Main::Session *Application::maybePrimarySession() const {
 	return _domain->started() ? activeAccount().maybeSession() : nullptr;
 }
 
-bool Application::exportPreventsQuit() {
+bool Application::exportPreventsQuit(Fn<void()> retry) {
 	if (_exportManager->inProgress()) {
-		_exportManager->stopWithConfirmation([] {
-			Quit();
-		});
+		if (!retry) {
+			retry = [] { Quit(); };
+		}
+		_exportManager->stopWithConfirmation(std::move(retry));
 		return true;
 	}
 	return false;
 }
 
-bool Application::uploadPreventsQuit() {
+bool Application::uploadPreventsQuit(Fn<void()> retry) {
 	if (!_domain->started()) {
 		return false;
 	}
@@ -1192,7 +1774,11 @@ bool Application::uploadPreventsQuit() {
 						account->session().uploadsStop();
 					}
 				}
-				Quit();
+				if (retry) {
+					retry();
+				} else {
+					Quit();
+				}
 			});
 			return true;
 		}
@@ -1200,18 +1786,21 @@ bool Application::uploadPreventsQuit() {
 	return false;
 }
 
-bool Application::downloadPreventsQuit() {
+bool Application::downloadPreventsQuit(Fn<void()> retry) {
 	if (_downloadManager->loadingInProgress()) {
-		_downloadManager->loadingStopWithConfirmation([=] { Quit(); });
+		if (!retry) {
+			retry = [] { Quit(); };
+		}
+		_downloadManager->loadingStopWithConfirmation(std::move(retry));
 		return true;
 	}
 	return false;
 }
 
-bool Application::preventsQuit(QuitReason reason) {
-	if (exportPreventsQuit()
-		|| uploadPreventsQuit()
-		|| downloadPreventsQuit()) {
+bool Application::preventsQuit(QuitReason reason, Fn<void()> retry) {
+	if (exportPreventsQuit(retry)
+		|| uploadPreventsQuit(retry)
+		|| downloadPreventsQuit(std::move(retry))) {
 		return true;
 	} else if ((!_mediaView
 		|| _mediaView->isHidden()
@@ -2195,16 +2784,28 @@ void SetLaunchState(LaunchState state) {
    GlobalLaunchState = state;
 }
 
-void Restart() {
-   const auto updateReady = !UpdaterDisabled()
-	   && (UpdateChecker().state() == UpdateChecker::State::Ready);
-   if (updateReady) {
-	   cSetRestartingUpdate(true);
-   } else {
-	   cSetRestarting(true);
-	   cSetRestartingToSettings(true);
-   }
-   Quit();
+void Restart(bool toSettings, Fn<bool()> prepare) {
+	if (Quitting()) {
+		return;
+	}
+	if (IsAppLaunched() && App().preventsQuit(QuitReason::Default, [=] {
+			Restart(toSettings, prepare);
+		})) {
+		return;
+	}
+	if (prepare && !prepare()) {
+		return;
+	}
+	const auto updateReady = !UpdaterDisabled()
+		&& (UpdateChecker().state() == UpdateChecker::State::Ready);
+	if (updateReady) {
+		cSetRestartingUpdate(true);
+	} else {
+		cSetRestarting(true);
+		cSetRestartingToSettings(toSettings);
+	}
+	SetLaunchState(LaunchState::QuitRequested);
+	QuitAttempt();
 }
 
 } // namespace Core

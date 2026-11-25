@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/history_view_chat_section.h"
 
+#include "ui/chat/studio_paint.h"
+
 #include "history/admin_log/history_admin_log_section.h"
 #include "history/view/controls/history_view_top_controls.h"
 #include "history/view/controls/history_view_bottom_controls.h"
@@ -4643,6 +4645,7 @@ void ChatWidget::paintEvent(QPaintEvent *e) {
 	const auto bg = e->rect().intersected(
 		QRect(0, aboveHeight, width(), height() - aboveHeight));
 	SectionWidget::PaintBackground(controller(), _theme.get(), this, bg);
+	Ui::Studio::PaintBackdrop(this, bg);
 
 	if (_suggestOptions && !_bottom->isButtonActive()) {
 		auto p = Painter(this);

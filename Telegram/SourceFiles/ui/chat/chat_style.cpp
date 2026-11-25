@@ -7,8 +7,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ui/chat/chat_style.h"
 
+#include "core/kukagram_appearance.h"
 #include "ui/chat/chat_theme.h"
 #include "ui/chat/chat_theme_readability.h"
+#include "ui/chat/studio_paint.h"
 #include "ui/image/image_prepare.h" // ImageRoundRadius
 #include "ui/text/text_custom_emoji.h"
 #include "ui/color_contrast.h"
@@ -23,6 +25,69 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Ui {
 namespace {
+
+[[nodiscard]] std::array<QColor, 2> StudioBubbleColors(
+		const MessageStyle &style,
+		bool outgoing) {
+	const auto base = style.msgBg->c;
+	const auto text = style.historyTextFg->c;
+	const auto dark = CountPerceivedBrightness(base)
+		< CountPerceivedBrightness(text);
+	const auto colors = Studio::BubbleColors(dark, outgoing);
+	const auto foregrounds = std::array{
+		text,
+		style.textPalette.linkFg->c,
+		style.textPalette.monoFg->c,
+		style.msgServiceFg->c,
+		style.msgDateFg->c,
+	};
+	auto minimum = std::array{ 4.5, 4.5, 4.5, 3., 3. };
+	auto brightness = std::array<float64, foregrounds.size()>();
+	for (auto i = size_t(0); i != foregrounds.size(); ++i) {
+		minimum[i] = std::min(minimum[i], CountContrast(base, foregrounds[i]));
+		brightness[i] = CountContrast(foregrounds[i], Qt::black);
+	}
+	const auto readable = [&](const QColor &first, const QColor &last) {
+		// Bound every interpolated RGB value, including integer rounding.
+		const auto min = CountContrast(QColor(
+			std::min(first.red(), last.red()),
+			std::min(first.green(), last.green()),
+			std::min(first.blue(), last.blue())), Qt::black);
+		const auto max = CountContrast(QColor(
+			std::max(first.red(), last.red()),
+			std::max(first.green(), last.green()),
+			std::max(first.blue(), last.blue())), Qt::black);
+		for (auto i = size_t(0); i != foregrounds.size(); ++i) {
+			const auto value = brightness[i];
+			const auto contrast = (value < min)
+				? (min / value)
+				: (value > max)
+				? (value / max)
+				: 1.;
+			if (contrast + 0.001 < minimum[i]) {
+				return false;
+			}
+		}
+		return true;
+	};
+	const auto adjust = [&](const QColor &target, int weight) {
+		const auto mix = [=](int value, int other) {
+			return (value * (8 - weight) + other * weight + 4) / 8;
+		};
+		return QColor(
+			mix(base.red(), target.red()),
+			mix(base.green(), target.green()),
+			mix(base.blue(), target.blue()));
+	};
+	for (auto weight = 8; weight > 0; --weight) {
+		const auto first = adjust(colors[0], weight);
+		const auto last = adjust(colors[1], weight);
+		if (readable(first, last)) {
+			return { first, last };
+		}
+	}
+	return { base, base };
+}
 
 void EnsureCorners(
 		CornersPixmaps &corners,
@@ -714,6 +779,12 @@ void ChatStyle::assignPalette(not_null<const style::palette*> palette) {
 	for (auto &style : _messageStyles) {
 		style.msgBgCornersSmall = {};
 		style.msgBgCornersLarge = {};
+		style.kukagramBgCornersSmall = {};
+		style.kukagramBgCornersLarge = {};
+		style.kukagramBgCornersText = {};
+		style.msgBgCornersText = {};
+		style.kukagramBg = std::nullopt;
+		style.studioBg = std::nullopt;
 		style.preCache = nullptr;
 		style.textPalette.linkAlwaysActive
 			= style.semiboldPalette.linkAlwaysActive
@@ -759,8 +830,36 @@ const CornersPixmaps &ChatStyle::serviceBgCornersInverted() const {
 	return _serviceBgCornersInverted;
 }
 
+const CornersPixmaps &MessageStyle::solidBubbleCorners(
+		bool large,
+		bool roundedText,
+		bool soft) const {
+	if (!soft && !(large && roundedText)) {
+		return large ? msgBgCornersLarge : msgBgCornersSmall;
+	}
+	auto &corners = !soft ? msgBgCornersText
+		: !large ? kukagramBgCornersSmall
+		: roundedText ? kukagramBgCornersText
+		: kukagramBgCornersLarge;
+	if (corners.p[0].isNull()) {
+		EnsureCorners(corners,
+			!large ? BubbleRadiusSmall()
+				: roundedText ? KukagramTextBubbleRadiusLarge()
+				: BubbleRadiusLarge(),
+			soft ? kukagramBg->color() : msgBg,
+			&msgShadow);
+	}
+	return corners;
+}
+
 const MessageStyle &ChatStyle::messageStyle(bool outbg, bool selected) const {
 	auto &result = messageStyleRaw(outbg, selected);
+	if (!selected
+		&& !result.studioBg
+		&& result.msgBg->c.alpha() == 255
+		&& Core::KukagramAppearance::Current().studio) {
+		result.studioBg = StudioBubbleColors(result, outbg);
+	}
 	EnsureCorners(
 		result.msgBgCornersSmall,
 		BubbleRadiusSmall(),
@@ -771,6 +870,25 @@ const MessageStyle &ChatStyle::messageStyle(bool outbg, bool selected) const {
 		BubbleRadiusLarge(),
 		result.msgBg,
 		&result.msgShadow);
+	if (!selected) {
+		if (!result.kukagramBg) {
+			constexpr auto kTintAlpha = 24;
+			const auto tint = outbg
+				? QColor(155, 223, 191)
+				: QColor(156, 128, 213);
+			const auto original = result.msgBg->c;
+			const auto blend = [](int base, int target) {
+				return (base * (255 - kTintAlpha)
+					+ target * kTintAlpha + 127) / 255;
+			};
+			result.kukagramBg.emplace(QColor(
+				blend(original.red(), tint.red()),
+				blend(original.green(), tint.green()),
+				blend(original.blue(), tint.blue()),
+				original.alpha()));
+		}
+	}
+
 	const auto &replyBar = result.msgReplyBarColor->c;
 	for (auto i = 0; i != kColorPatternsCount; ++i) {
 		EnsureBlockquoteCache(

@@ -19,6 +19,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtWidgets/QMenu>
 #include <QtGui/QIcon>
+#include <QtGui/QPainterPath>
+#include <QtCore/QTimer>
 
 #import <AppKit/NSMenu.h>
 #import <AppKit/NSStatusItem.h>
@@ -95,13 +97,32 @@ namespace {
 }
 
 [[nodiscard]] QImage TrayIconBack(bool darkMode) {
-	static const auto WithColor = [](QColor color) {
-		return st::macTrayIcon.instance(color, 100);
-	};
-	static const auto DarkModeResult = WithColor({ 255, 255, 255 });
-	static const auto LightModeResult = WithColor({ 0, 0, 0, 180 });
-	auto result = darkMode ? DarkModeResult : LightModeResult;
-	result.detach();
+	constexpr auto kSide = 22;
+	constexpr auto kStroke = 3.;
+	const auto ratio = style::DevicePixelRatio();
+	auto result = QImage(
+		QSize(kSide * ratio, kSide * ratio),
+		QImage::Format_ARGB32_Premultiplied);
+	result.fill(Qt::transparent);
+	result.setDevicePixelRatio(ratio);
+	{
+		Painter p(&result);
+		PainterHighQualityEnabler hq(p);
+		p.setPen(QPen(
+			darkMode ? QColor(255, 255, 255) : QColor(0, 0, 0, 180),
+			kStroke,
+			Qt::SolidLine,
+			Qt::RoundCap,
+			Qt::RoundJoin));
+		auto letter = QPainterPath();
+		letter.moveTo(6., 3.5);
+		letter.lineTo(6., 18.5);
+		letter.moveTo(16., 3.5);
+		letter.lineTo(6., 12.);
+		letter.moveTo(10., 9.);
+		letter.lineTo(16.5, 18.5);
+		p.drawPath(letter);
+	}
 	return result;
 }
 
@@ -196,7 +217,7 @@ void UpdateIcon(const NSStatusItem *status) {
 	auto resultActive = result;
 	resultActive.detach();
 
-	const auto counter = Core::App().unreadBadge();
+	const auto counter = 0; // kukagram: keep the menu bar K free of unread badges.
 	const auto muted = Core::App().unreadBadgeMuted();
 
 	const auto &bg = (muted ? st::trayCounterBgMute : st::trayCounterBg);
@@ -395,6 +416,29 @@ void Tray::createMenu() {
 	if (!_menu) {
 		_menu = base::make_unique_q<QMenu>(nullptr);
 	}
+	const auto marker = u"kukagram-preferences"_q;
+	for (const auto action : _menu->actions()) {
+		if (action->objectName() == marker) {
+			return;
+		}
+	}
+	const auto action = _menu->addAction(
+		u"kukagram: аккаунты, уведомления и клавиши"_q,
+		[] {
+			QTimer::singleShot(0, &Core::App(), [] {
+				Core::App().showKukagramPreferences();
+			});
+		});
+	action->setObjectName(marker);
+    const auto appearance = _menu->addAction(
+        u"kukagram: внешний вид"_q,
+        [] {
+            QTimer::singleShot(0, &Core::App(), [] {
+                Core::App().showKukagramAppearance();
+            });
+        });
+    appearance->setObjectName(u"kukagram-appearance"_q);
+	_menu->addSeparator();
 }
 
 void Tray::destroyMenu() {

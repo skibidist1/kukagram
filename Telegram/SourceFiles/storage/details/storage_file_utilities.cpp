@@ -206,20 +206,21 @@ bool WriteManager::writeNow(WriteEntry &&entry) {
 	QSaveFile save;
 	if (open(save, 's')) {
 		const auto written = write(save);
-		if (save.commit()) {
+		if (!written) {
+			save.cancelWriting();
+		} else if (save.commit()) {
 			QFile::remove(simple);
 			QFile::remove(backup);
-			const auto ok = written
-				&& (save.error() == QFileDevice::NoError);
-			if (!ok) {
-				LOG(("Storage Error: Could not write '%1': %2."
-					).arg(safe, reason(save)));
-			}
-			return ok;
+			return true;
 		}
 		LOG(("Storage Error: Could not commit '%1': %2."
 			).arg(safe, reason(save)));
 	}
+#if defined Q_OS_MACOS
+	// QSaveFile performs a same-directory atomic replace on macOS. A plain
+	// fallback could truncate the only readable legacy copy on a failed save.
+	return false;
+#else
 	QFile plain;
 	if (open(plain, '0')) {
 		const auto written = write(plain);
@@ -244,6 +245,7 @@ bool WriteManager::writeNow(WriteEntry &&entry) {
 			).arg(simple, safe, renameError));
 	}
 	return false;
+#endif
 }
 
 void WriteManager::writeSyncAll() {
@@ -293,10 +295,10 @@ bool WriteManager::writeHeader(const QString &basePath, QFileDevice &file) {
 			return false;
 		}
 	}
-	file.write(TdfMagic, TdfMagicLen);
 	const auto version = qint32(AppVersion);
-	file.write((const char*)&version, sizeof(version));
-	return true;
+	return (file.write(TdfMagic, TdfMagicLen) == TdfMagicLen)
+		&& (file.write(reinterpret_cast<const char*>(&version), sizeof(version))
+			== sizeof(version));
 }
 
 QString WriteManager::path(const WriteEntry &entry, char postfix) const {

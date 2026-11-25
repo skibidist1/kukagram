@@ -1,0 +1,481 @@
+/*
+Local account groups for kukagram.
+*/
+#pragma once
+
+#include "base/weak_ptr.h"
+#include "core/application.h"
+#include "core/kukagram_account_groups.h"
+#include "data/data_user.h"
+#include "main/main_account.h"
+#include "main/main_domain.h"
+#include "main/main_session.h"
+#include "settings.h"
+#include "window/window_controller.h"
+
+#include <QtCore/QSignalBlocker>
+#include <QtCore/QTimer>
+#include <QtWidgets/QApplication>
+#include <QtWidgets/QComboBox>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QInputDialog>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
+#include <QtWidgets/QListWidget>
+#include <QtWidgets/QMessageBox>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QVBoxLayout>
+
+#include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
+
+namespace Core::KukagramAccountGroups {
+
+class GroupsDialog final : public QDialog {
+public:
+	GroupsDialog(
+		QWidget *parent,
+		not_null<Main::Domain*> domain,
+		QString workDir,
+		Groups groups)
+	: QDialog(parent)
+	, _domain(base::make_weak(domain))
+	, _workDir(std::move(workDir))
+	, _groups(std::move(groups)) {
+		setAttribute(Qt::WA_DeleteOnClose);
+		setAttribute(Qt::WA_QuitOnClose, false);
+		setWindowModality(Qt::ApplicationModal);
+		setWindowTitle(u"Группы аккаунтов"_q);
+		resize(560, 490);
+
+		const auto layout = new QVBoxLayout(this);
+		const auto groupsRow = new QHBoxLayout();
+		layout->addLayout(groupsRow);
+		_group = new QComboBox(this);
+		_group->setAccessibleName(u"Группа аккаунтов"_q);
+		_group->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+		_group->setMinimumContentsLength(14);
+		groupsRow->addWidget(_group, 1);
+		_add = addButton(groupsRow, u"Создать"_q);
+		_rename = addButton(groupsRow, u"Переименовать"_q);
+		_remove = addButton(groupsRow, u"Удалить группу"_q);
+
+		const auto toolsRow = new QHBoxLayout();
+		layout->addLayout(toolsRow);
+		_search = new QLineEdit(this);
+		_search->setAccessibleName(u"Поиск аккаунта"_q);
+		_search->setPlaceholderText(u"Имя, @username или номер"_q);
+		termsChanged();
+		toolsRow->addWidget(_search, 1);
+		_view = new QComboBox(this);
+		_view->setAccessibleName(u"Какие аккаунты показать"_q);
+		_view->addItem(u"Участники"_q);
+		_view->addItem(u"Все аккаунты"_q);
+		toolsRow->addWidget(_view);
+
+		_accounts = new QListWidget(this);
+		_accounts->setAccessibleName(u"Список аккаунтов группы"_q);
+		layout->addWidget(_accounts, 1);
+		_status = new QLabel(this);
+		_status->setWordWrap(true);
+		layout->addWidget(_status);
+
+		const auto actionsRow = new QHBoxLayout();
+		layout->addLayout(actionsRow);
+		_addCurrent = addButton(actionsRow, u"Добавить текущий аккаунт"_q);
+		_open = addButton(actionsRow, u"Переключиться"_q);
+		actionsRow->addStretch();
+		const auto close = addButton(actionsRow, u"Закрыть"_q);
+
+		connect(close, &QPushButton::clicked, this, &QDialog::reject);
+		connect(_group, &QComboBox::currentIndexChanged, this, [=] {
+			setDefaultView();
+			rebuildAccounts();
+		});
+		connect(_view, &QComboBox::currentIndexChanged, this, [=] {
+			filter();
+		});
+		connect(_search, &QLineEdit::textChanged, this, [=] {
+			termsChanged();
+			filter();
+		});
+		connect(_search, &QLineEdit::returnPressed, this, [=] {
+			activateSelected();
+		});
+		connect(_add, &QPushButton::clicked, this, [=] { editName(-1); });
+		connect(_rename, &QPushButton::clicked, this, [=] {
+			editName(_group->currentIndex());
+		});
+		connect(_remove, &QPushButton::clicked, this, [=] { removeGroup(); });
+		connect(_addCurrent, &QPushButton::clicked, this, [=] {
+			if (const auto id = currentAccountId(); id && setMembership(id, true)) {
+				rebuildAccounts();
+			}
+		});
+		connect(_open, &QPushButton::clicked, this, [=] { activateSelected(); });
+		connect(_accounts, &QListWidget::currentItemChanged, this, [=] {
+			updateButtons();
+		});
+		connect(_accounts, &QListWidget::itemChanged, this, [=](
+				QListWidgetItem *item) {
+			const auto checked = (item->checkState() == Qt::Checked);
+			if (setMembership(item->data(Qt::UserRole).toULongLong(), checked)) {
+				filter();
+			} else {
+				const auto blocker = QSignalBlocker(_accounts);
+				item->setCheckState(checked ? Qt::Unchecked : Qt::Checked);
+			}
+		});
+		connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
+			this, &QDialog::reject);
+		connect(&Core::App(), &QObject::destroyed, this, &QDialog::reject);
+		Core::App().passcodeLockChanges(
+		) | rpl::filter([](bool locked) { return locked; }) | rpl::on_next([=] {
+			reject();
+		}, _lifetime);
+		domain->accountsChanges() | rpl::on_next([=] {
+			if (liveDomain()) rebuildAccounts();
+		}, _lifetime);
+		domain->activeSessionChanges() | rpl::on_next([=](Main::Session*) {
+			if (liveDomain()) rebuildAccounts();
+		}, _lifetime);
+
+		rebuildGroups(0);
+	}
+
+private:
+	static QPushButton *addButton(QHBoxLayout *layout, const QString &text) {
+		const auto result = new QPushButton(text);
+		result->setAutoDefault(false);
+		layout->addWidget(result);
+		return result;
+	}
+
+	[[nodiscard]] Main::Domain *liveDomain() const {
+		const auto domain = _domain.get();
+		return (!Core::Quitting() && !Core::App().passcodeLocked()
+			&& domain && domain->started())
+			? domain : nullptr;
+	}
+
+	[[nodiscard]] quint64 currentAccountId() const {
+		if (const auto domain = liveDomain()) {
+			if (const auto session = domain->active().maybeSession()) {
+				return session->uniqueId();
+			}
+		}
+		return 0;
+	}
+
+	[[nodiscard]] const Group *selectedGroup() const {
+		const auto index = _group->currentIndex();
+		return (index >= 0 && index < int(_groups.size()))
+			? &_groups[index] : nullptr;
+	}
+
+	void termsChanged() {
+		_terms = _search->text().simplified().split(
+			QChar(' '), Qt::SkipEmptyParts);
+	}
+
+	void warn(const QString &text) {
+		const auto warning = new QMessageBox(
+			QMessageBox::Warning, u"Группы аккаунтов"_q,
+			text, QMessageBox::Ok, this);
+		warning->setTextFormat(Qt::PlainText);
+		warning->setAttribute(Qt::WA_DeleteOnClose);
+		warning->open();
+	}
+
+	bool commit(Groups groups) {
+		if (!liveDomain()) {
+			return false;
+		}
+		if (!Save(_workDir, groups, &_groups)) {
+			warn(u"Не удалось сохранить группы. Попробуй закрыть окно и открыть его снова."_q);
+			return false;
+		}
+		_groups = std::move(groups);
+		return true;
+	}
+
+	void editName(int index) {
+		if (index >= int(_groups.size()) || !liveDomain()) {
+			return;
+		}
+		const auto input = new QInputDialog(this);
+		input->setAttribute(Qt::WA_DeleteOnClose);
+		input->setWindowTitle(index < 0 ? u"Новая группа"_q : u"Переименовать группу"_q);
+		input->setLabelText(u"Название группы"_q);
+		input->setTextValue(index < 0 ? QString() : _groups[index].name);
+		connect(input, &QInputDialog::textValueSelected, this, [=](const QString &text) {
+			const auto name = NormalizeName(text);
+			if (name.isEmpty()) {
+				warn(u"Введи название группы до %1 символов."_q.arg(kMaxNameLength));
+				return;
+			}
+			for (auto i = 0; i != int(_groups.size()); ++i) {
+				if (i != index
+					&& _groups[i].name.toCaseFolded() == name.toCaseFolded()) {
+					warn(u"Группа с таким названием уже есть."_q);
+					return;
+				}
+			}
+			auto groups = _groups;
+			if (index < 0 && groups.size() < kMaxGroups) {
+				groups.push_back({ name, {} });
+			} else if (index >= 0 && index < int(groups.size())) {
+				groups[index].name = name;
+			} else {
+				return;
+			}
+			if (commit(std::move(groups))) {
+				rebuildGroups(index < 0 ? int(_groups.size()) - 1 : index);
+			}
+		});
+		input->open();
+	}
+
+	void removeGroup() {
+		if (!liveDomain() || !selectedGroup()) {
+			return;
+		}
+		const auto index = _group->currentIndex();
+		const auto prompt = new QMessageBox(
+			QMessageBox::Question,
+			u"Удалить группу"_q,
+			u"Удалить группу «%1»? Аккаунты останутся в общем списке."_q
+				.arg(_groups[index].name),
+			QMessageBox::NoButton,
+			this);
+		prompt->setTextFormat(Qt::PlainText);
+		prompt->setAttribute(Qt::WA_DeleteOnClose);
+		const auto remove = prompt->addButton(u"Удалить группу"_q,
+			QMessageBox::DestructiveRole);
+		const auto cancel = prompt->addButton(QMessageBox::Cancel);
+		prompt->setDefaultButton(cancel);
+		connect(prompt, &QMessageBox::buttonClicked, this, [=](QAbstractButton *button) {
+			if (button != remove || index >= int(_groups.size())) {
+				return;
+			}
+			auto groups = _groups;
+			groups.erase(groups.begin() + index);
+			if (commit(std::move(groups))) {
+				rebuildGroups(index);
+			}
+		});
+		prompt->open();
+	}
+
+	bool setMembership(quint64 id, bool checked) {
+		const auto group = selectedGroup();
+		if (!group || !id || !liveDomain()) {
+			return false;
+		}
+		auto groups = _groups;
+		auto &members = groups[_group->currentIndex()].members;
+		const auto found = std::find(members.begin(), members.end(), id);
+		if (checked && found == members.end()) {
+			members.push_back(id);
+		} else if (!checked && found != members.end()) {
+			members.erase(found);
+		} else {
+			return true;
+		}
+		return commit(std::move(groups));
+	}
+
+	void rebuildGroups(int index) {
+		const auto blocker = QSignalBlocker(_group);
+		_group->clear();
+		for (const auto &group : _groups) {
+			_group->addItem(group.name);
+		}
+		if (!_groups.empty()) {
+			_group->setCurrentIndex(std::clamp(index, 0, int(_groups.size()) - 1));
+		}
+		setDefaultView();
+		rebuildAccounts();
+	}
+
+	void setDefaultView() {
+		const auto group = selectedGroup();
+		const auto blocker = QSignalBlocker(_view);
+		_view->setCurrentIndex((group && group->members.empty()) ? 1 : 0);
+	}
+
+	void rebuildAccounts() {
+		const auto group = selectedGroup();
+		const auto domain = liveDomain();
+		const auto blocker = QSignalBlocker(_accounts);
+		const auto selected = _accounts->currentItem()
+			? _accounts->currentItem()->data(Qt::UserRole).toULongLong() : 0;
+		_accounts->clear();
+		if (group && domain) {
+			auto liveUsernames = std::unordered_map<quint64, QString>();
+			for (const auto &[index, account] : domain->accounts()) {
+				if (const auto session = account->maybeSession()) {
+					liveUsernames.emplace(session->uniqueId(), session->user()->username());
+				}
+			}
+			const auto members = std::unordered_set<quint64>(
+				group->members.begin(), group->members.end());
+			const auto currentId = currentAccountId();
+			for (const auto &account : domain->storedAccounts()) {
+				const auto id = account.uniqueId;
+				if (!id) {
+					continue;
+				}
+				auto label = account.name.isEmpty()
+					? u"Аккаунт %1"_q.arg(account.index + 1)
+					: account.name;
+				if (const auto i = liveUsernames.find(id);
+					i != liveUsernames.end() && !i->second.isEmpty()) {
+					label += u"  ·  @"_q + i->second;
+				}
+				if (!account.phone.isEmpty()) {
+					label += u"  ·  "_q + account.phone;
+				}
+				if (id == currentId) {
+					label += u"  ·  текущий"_q;
+				}
+				const auto item = new QListWidgetItem(label, _accounts);
+				item->setData(Qt::UserRole, QVariant::fromValue(qulonglong(id)));
+				item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+				item->setCheckState(members.contains(id) ? Qt::Checked : Qt::Unchecked);
+				if (id == selected) {
+					_accounts->setCurrentItem(item);
+				}
+			}
+		}
+		filter();
+	}
+
+	void filter() {
+		const auto blocker = QSignalBlocker(_accounts);
+		const auto group = selectedGroup();
+		const auto membersOnly = (_view->currentIndex() == 0);
+		auto shown = 0;
+		auto members = 0;
+		QListWidgetItem *first = nullptr;
+		for (auto i = 0; i != _accounts->count(); ++i) {
+			const auto item = _accounts->item(i);
+			const auto checked = item->checkState() == Qt::Checked;
+			const auto matches = std::all_of(_terms.begin(), _terms.end(),
+				[&](const QString &term) {
+					return item->text().contains(term, Qt::CaseInsensitive);
+				});
+			const auto show = (!membersOnly || checked) && matches;
+			item->setHidden(!show);
+			members += checked;
+			if (show) {
+				++shown;
+				if (!first) first = item;
+			}
+		}
+		const auto current = _accounts->currentItem();
+		if (!current || current->isHidden()) {
+			_accounts->setCurrentItem(first);
+		}
+		if (!group) {
+			_status->setText(u"Создай группу, чтобы добавить аккаунты."_q);
+		} else if (!shown) {
+			_status->setText(_terms.empty()
+				? u"В группе пока нет доступных аккаунтов."_q
+				: u"Аккаунты не найдены."_q);
+		} else {
+			_status->setText(u"Участников: %1"_q.arg(members));
+		}
+		updateButtons();
+	}
+
+	void updateButtons() {
+		const auto group = selectedGroup();
+		const auto id = currentAccountId();
+		const auto item = _accounts->currentItem();
+		_add->setEnabled(_groups.size() < kMaxGroups);
+		_group->setEnabled(group != nullptr);
+		_rename->setEnabled(group != nullptr);
+		_remove->setEnabled(group != nullptr);
+		_view->setEnabled(group != nullptr);
+		_search->setEnabled(group != nullptr);
+		_open->setEnabled(group && item && !item->isHidden());
+		_addCurrent->setEnabled(group && id
+			&& std::find(group->members.begin(), group->members.end(), id)
+				== group->members.end());
+	}
+
+	void activateSelected() {
+		const auto item = _accounts->currentItem();
+		if (!liveDomain() || !item || item->isHidden()) {
+			return;
+		}
+		const auto id = item->data(Qt::UserRole).toULongLong();
+		const auto weak = _domain;
+		accept();
+		QTimer::singleShot(0, QCoreApplication::instance(), [=] {
+			const auto domain = weak.get();
+			if (!domain || Core::Quitting() || !domain->started()
+				|| Core::App().passcodeLocked()) {
+				return;
+			}
+			const auto accounts = domain->storedAccounts();
+			const auto i = std::find_if(accounts.begin(), accounts.end(),
+				[=](const Main::StoredAccount &account) { return account.uniqueId == id; });
+			if (i != accounts.end()) {
+				domain->activateStored(i->index);
+			}
+		});
+	}
+
+	base::weak_ptr<Main::Domain> _domain;
+	QString _workDir;
+	Groups _groups;
+	QStringList _terms;
+	QComboBox *_group = nullptr;
+	QComboBox *_view = nullptr;
+	QLineEdit *_search = nullptr;
+	QListWidget *_accounts = nullptr;
+	QLabel *_status = nullptr;
+	QPushButton *_add = nullptr;
+	QPushButton *_rename = nullptr;
+	QPushButton *_remove = nullptr;
+	QPushButton *_addCurrent = nullptr;
+	QPushButton *_open = nullptr;
+	rpl::lifetime _lifetime;
+};
+
+} // namespace Core::KukagramAccountGroups
+
+namespace Core {
+
+inline void ShowKukagramAccountGroupsDialog() {
+	if (Quitting() || App().passcodeLocked() || !App().domain().started()) {
+		return;
+	}
+	if (const auto modal = QApplication::activeModalWidget()) {
+		modal->raise();
+		modal->activateWindow();
+		return;
+	}
+	App().activate();
+	const auto parent = QApplication::activeWindow();
+	auto result = KukagramAccountGroups::Load(cWorkingDir());
+	if (!result.ok) {
+		const auto warning = new QMessageBox(
+			QMessageBox::Warning,
+			u"Группы аккаунтов"_q,
+			u"Не удалось прочитать сохранённые группы аккаунтов."_q,
+			QMessageBox::Ok,
+			parent);
+		warning->setAttribute(Qt::WA_DeleteOnClose);
+		warning->open();
+		return;
+	}
+	const auto dialog = new KukagramAccountGroups::GroupsDialog(
+		parent, &App().domain(), cWorkingDir(), std::move(result.groups));
+	dialog->show();
+}
+
+} // namespace Core

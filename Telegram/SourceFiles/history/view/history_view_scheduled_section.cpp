@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/history_view_scheduled_section.h"
 
+#include "ui/chat/studio_paint.h"
+
 #include "history/view/controls/history_view_compose_controls.h"
 #include "history/view/history_view_chat_section.h"
 #include "history/view/history_view_empty_list_bubble.h"
@@ -1245,6 +1247,7 @@ void ScheduledWidget::paintEvent(QPaintEvent *e) {
 
 	const auto clip = e->rect();
 	SectionWidget::PaintBackground(controller(), _theme.get(), this, clip);
+	Ui::Studio::PaintBackdrop(this, clip);
 }
 
 void ScheduledWidget::onScroll() {
