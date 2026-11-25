@@ -425,35 +425,6 @@ PeerData *readPeer(
 	return result;
 }
 
-QString peekUserPhone(int streamAppVersion, QDataStream &stream) {
-	quint64 peerIdSerialized = 0, versionTag = 0, photoId = 0;
-	qint32 version = 0, photoHasVideo = 0;
-	stream >> peerIdSerialized >> versionTag;
-	const auto peerId = DeserializePeerId(peerIdSerialized);
-	DEBUG_LOG(("peekUserPhone.id: %1").arg(peerId.value));
-	if (!peerId || !peerIsUser(peerId)) {
-		return nullptr;
-	}
-	if (versionTag == kVersionTag) {
-		stream >> version >> photoId;
-	} else {
-		photoId = versionTag;
-	}
-
-	if (!readImageLocation(streamAppVersion, stream)) {
-		return nullptr;
-	}
-	if (version > 0) {
-		stream >> photoHasVideo;
-	}
-
-	QString first, last, phone;
-	stream >> first >> last >> phone;
-	DEBUG_LOG(("peekUserPhone.data: %1 %2 %3"
-		).arg(first, last, phone));
-	return phone;
-}
-
 std::optional<UserIdentity> peekUserIdentity(
 		int streamAppVersion,
 		QDataStream &stream) {
@@ -461,9 +432,7 @@ std::optional<UserIdentity> peekUserIdentity(
 	qint32 version = 0, photoHasVideo = 0;
 	stream >> peerIdSerialized >> versionTag;
 	const auto peerId = DeserializePeerId(peerIdSerialized);
-	if (stream.status() != QDataStream::Ok
-		|| !peerId
-		|| !peerIsUser(peerId)) {
+	if (!peerId || !peerIsUser(peerId)) {
 		return std::nullopt;
 	}
 	if (versionTag == kVersionTag) {
@@ -471,19 +440,22 @@ std::optional<UserIdentity> peekUserIdentity(
 	} else {
 		photoId = versionTag;
 	}
-	if (stream.status() != QDataStream::Ok
-		|| !readImageLocation(streamAppVersion, stream)) {
+	if (!readImageLocation(streamAppVersion, stream)) {
 		return std::nullopt;
 	}
 	if (version > 0) {
 		stream >> photoHasVideo;
 	}
-	auto result = UserIdentity{ .id = peerId };
+	auto result = UserIdentity();
 	stream >> result.firstName >> result.lastName >> result.phone;
-	if (stream.status() != QDataStream::Ok) {
-		return std::nullopt;
-	}
-	return result;
+	return (stream.status() == QDataStream::Ok)
+		? std::make_optional(std::move(result))
+		: std::nullopt;
+}
+
+QString peekUserPhone(int streamAppVersion, QDataStream &stream) {
+	const auto identity = peekUserIdentity(streamAppVersion, stream);
+	return identity ? identity->phone : QString();
 }
 
 } // namespace Serialize
