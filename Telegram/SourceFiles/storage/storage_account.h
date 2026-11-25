@@ -27,6 +27,7 @@ struct Settings;
 namespace Main {
 class Account;
 class SessionSettings;
+struct StoredAccount;
 } // namespace Main
 
 namespace Data {
@@ -83,6 +84,8 @@ public:
 	[[nodiscard]] std::unique_ptr<MTP::Config> start(
 		MTP::AuthKeyPtr localKey);
 	void startAdded(MTP::AuthKeyPtr localKey);
+	[[nodiscard]] Main::StoredAccount readStoredAccount(
+		MTP::AuthKeyPtr localKey, int index) const;
 	[[nodiscard]] int oldMapVersion() const {
 		return _oldMapVersion;
 	}
@@ -100,6 +103,9 @@ public:
 	void writeSessionSettings();
 	void writeMtpData();
 	void writeMtpConfig();
+	[[nodiscard]] bool checkpointForRetirement();
+	void stopWritesForRetirement();
+	[[nodiscard]] bool writeImportedSession();
 
 	void registerDraftSource(
 		not_null<History*> history,
@@ -168,8 +174,8 @@ public:
 	[[nodiscard]] crl::time mediaLastPlaybackPosition(DocumentId id) const;
 
 	void writeSearchSuggestionsDelayed();
-	void writeSearchSuggestionsIfNeeded();
-	void writeSearchSuggestions();
+	bool writeSearchSuggestionsIfNeeded(bool sync = false);
+	bool writeSearchSuggestions(bool sync = false);
 	void readSearchSuggestions();
 
 	void writeSelf();
@@ -271,19 +277,21 @@ private:
 	void clearLegacyFiles();
 	void writeMapDelayed();
 	void writeMapQueued();
-	void writeMap();
+	void writeMap(QByteArray *written = nullptr);
 
 	void readLocations();
-	void writeLocations();
+	bool writeLocations(bool sync = false);
 	void writeLocationsQueued();
 	void writeLocationsDelayed();
 
 	void readPrefs();
-	void writePrefs();
+	bool writePrefs(bool sync = false);
 	void writePrefsDelayed();
 
 	std::unique_ptr<Main::SessionSettings> readSessionSettings();
-	void writeSessionSettings(Main::SessionSettings *stored);
+	void writeSessionSettings(
+		Main::SessionSettings *stored,
+		QByteArray *written = nullptr);
 
 	std::unique_ptr<MTP::Config> readMtpConfig();
 	void readMtpData();
@@ -418,6 +426,7 @@ private:
 	bool _mapChanged = false;
 	bool _prefsChanged = false;
 	bool _locationsChanged = false;
+	bool _writesStopped = false;
 
 	QImage _roundPlaceholder;
 

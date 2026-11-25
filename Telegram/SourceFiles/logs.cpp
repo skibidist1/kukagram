@@ -363,7 +363,7 @@ void start() {
 
 	LogsData = new LogsDataFields();
 	if (cWorkingDir().isEmpty()) {
-#if (!defined Q_OS_WIN && !defined _DEBUG) || defined Q_OS_WINRT || defined OS_WIN_STORE || defined OS_MAC_STORE
+#if defined Q_OS_MAC || (!defined Q_OS_WIN && !defined _DEBUG) || defined Q_OS_WINRT || defined OS_WIN_STORE
 		cForceWorkingDir(psAppDataPath());
 #else // (!Q_OS_WIN && !_DEBUG) || Q_OS_WINRT || OS_WIN_STORE || OS_MAC_STORE
 		cForceWorkingDir(cExeDir());
@@ -383,7 +383,40 @@ void start() {
 	QDir::setCurrent(cWorkingDir());
 #endif // !Q_OS_WINRT
 
+#if defined Q_OS_MAC && !defined OS_MAC_STORE
+	const auto dataDirectory = cWorkingDir() + u"tdata"_q;
+	const auto privatePermissions = QFileDevice::ReadOwner
+		| QFileDevice::WriteOwner | QFileDevice::ExeOwner;
+	const auto otherWriters = QFileDevice::WriteGroup | QFileDevice::WriteOther;
+	const auto rootReady = launcher.customWorkingDir()
+		? (QFileInfo(cWorkingDir()).isDir()
+			&& !(QFile::permissions(cWorkingDir()) & otherWriters))
+		: QFile::setPermissions(cWorkingDir(), privatePermissions);
+	const auto secureDataDirectory = [&] {
+		if (!QFileInfo(dataDirectory).isSymLink()) {
+			return QDir().mkpath(dataDirectory)
+				&& QFile::setPermissions(dataDirectory, privatePermissions);
+		}
+		// A relocated profile may point to an existing user-managed directory.
+		const auto nonOwnerAccess = QFileDevice::ReadGroup | QFileDevice::WriteGroup
+			| QFileDevice::ExeGroup | QFileDevice::ReadOther
+			| QFileDevice::WriteOther | QFileDevice::ExeOther;
+		const auto permissions = QFile::permissions(dataDirectory);
+		return QFileInfo(dataDirectory).isDir()
+			&& ((permissions & privatePermissions) == privatePermissions)
+			&& !(permissions & nonOwnerAccess);
+	};
+	if (cWorkingDir().isEmpty()
+		|| !rootReady
+		|| !secureDataDirectory()) {
+		delete LogsData;
+		LogsData = nullptr;
+		LOG(("FATAL: kukagram could not secure its local data directory."));
+		return;
+	}
+#else
 	QDir().mkpath(cWorkingDir() + u"tdata"_q);
+#endif
 
 	launcher.workingFolderReady();
 	CrashReports::StartCatching();
@@ -404,7 +437,9 @@ void start() {
 	LOG(("Executable dir: %1, name: %2").arg(cExeDir(), cExeName()));
 	LOG(("Initial working dir: %1").arg(launcher.initialWorkingDir()));
 	LOG(("Working dir: %1").arg(cWorkingDir()));
+#if !defined Q_OS_MAC || defined OS_MAC_STORE
 	LOG(("Command line: %1").arg(launcher.arguments().join(' ')));
+#endif
 
 	if (!LogsData) {
 		LOG(("FATAL: Could not open '%1' for writing log!"

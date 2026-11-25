@@ -666,6 +666,7 @@ private:
 		_cachedRows.clear();
 		update();
 	}};
+	bool _rowsScrollCacheStudio = false;
 	bool _selectedChatTypeFilter = false;
 	bool _pressedChatTypeFilter = false;
 	bool _selectedMorePosts = false;

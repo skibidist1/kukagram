@@ -39,6 +39,8 @@ public:
 
 	void updateIcon();
 
+	void setMenuBuilder(Fn<void()> builder);
+	void dismissMenu();
 	void createMenu();
 	void destroyMenu();
 
@@ -60,13 +62,15 @@ public:
 	[[nodiscard]] rpl::lifetime &lifetime();
 
 private:
+	struct MenuContents;
 	std::unique_ptr<NativeIcon> _nativeIcon;
-	base::unique_qptr<QMenu> _menu;
+	std::unique_ptr<MenuContents> _menu;
+	Fn<void()> _menuBuilder;
 
 	rpl::event_stream<> _showFromTrayRequests;
 	rpl::event_stream<> _aboutToShowRequests;
 
-	rpl::lifetime _actionsLifetime;
+	rpl::lifetime _iconLifetime;
 	rpl::lifetime _lifetime;
 
 };

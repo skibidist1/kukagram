@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_instance.h"
 #include "lang/lang_cloud_manager.h"
 #include "main/main_account.h"
+#include "mtproto/mtproto_dc_options.h"
 #include "main/main_app_config.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
@@ -192,19 +193,23 @@ void Step::finish(const MTPUser &user, QImage &&photo) {
 		return;
 	}
 
-	// Check if such account is authorized already.
-	for (const auto &[index, existing] : Core::App().domain().accounts()) {
-		const auto raw = existing.get();
-		if (const auto session = raw->maybeSession()) {
-			if (raw->mtp().environment() == _account->mtp().environment()
-				&& UserId(user.c_user().vid()) == session->userId()) {
-				_account->logOut();
-				crl::on_main(raw, [=] {
-					Core::App().domain().activate(raw);
+	auto &domain = Core::App().domain();
+	const auto current = ranges::find_if(domain.accounts(), [&](const Main::Domain::AccountWithIndex &entry) {
+		return entry.account.get() == _account;
+	});
+	Assert(current != end(domain.accounts()));
+	const auto test = _account->mtp().environment() == MTP::Environment::Test;
+	const auto uniqueId = quint64(user.c_user().vid().v)
+		| (test ? 0x0100'0000'0000'0000ULL : 0ULL);
+	for (const auto &stored : domain.storedAccounts()) {
+		if (stored.index != current->index && stored.uniqueId == uniqueId) {
+			_account->logOutThen(crl::guard(&domain, [=, domain = &domain, discarded = current->index] {
+				crl::on_main(domain, [=] {
+					domain->activateStored(stored.index, {}, discarded);
 					Local::sync();
 				});
-				return;
-			}
+			}));
+			return;
 		}
 	}
 
@@ -259,6 +264,7 @@ void Step::createSession(
 		PrepareSupportMode(&session);
 	}
 	Local::sync();
+	account->domain().finishLogin(account);
 }
 
 void Step::paintEvent(QPaintEvent *e) {
@@ -466,16 +472,10 @@ void Step::paintCover(QPainter &p, int top) {
 	st::introCoverLeft.paint(p, left, coverHeight - st::introCoverLeft.height(), width());
 	st::introCoverRight.paint(p, width() - right - st::introCoverRight.width(), coverHeight - st::introCoverRight.height(), width());
 
-	auto planeLeft = (width() - st::introCoverIcon.width()) / 2 - st::introCoverIconLeft;
-	auto planeTop = top + st::introCoverIconTop;
-	if (top < 0 && !_hasCover) {
-		const auto ratio = float64(st::introPlaneWidth / st::introPlaneHeight);
-		auto deltaLeft = -int(base::SafeRound(ratio * top));
-//		auto deltaTop = top;
-		planeLeft += deltaLeft;
-	//	planeTop += top;
-	}
-	st::introCoverIcon.paint(p, planeLeft, planeTop, width());
+	const auto planeTop = top + st::introCoverIconTop;
+	const auto logo = QPixmap(u":/gui/art/kukagram.png"_q);
+	const auto size = st::introCoverHeight - st::introCoverIconTop * 2;
+	p.drawPixmap(QRect((width() - size) / 2, planeTop, size, size), logo);
 }
 
 int Step::contentLeft() const {

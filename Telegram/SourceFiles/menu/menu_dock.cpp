@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "menu/menu_dock.h"
 
 #include "core/application.h"
+#include "base/weak_ptr.h"
 #include "core/core_settings.h"
 #include "data/data_user.h"
 #include "lang/lang_keys.h"
@@ -28,22 +29,45 @@ void RefreshDockMenu(QMenu *menu) {
 		return;
 	}
 
-	const auto accounts = Core::App().domain().orderedAccounts();
+	const auto accounts = Core::App().domain().storedAccounts();
 	if (accounts.size() > 1 && !Core::App().passcodeLocked()) {
 		menu->addSeparator();
 		const auto profilesHeader = menu->addAction(
 			tr::lng_mac_menu_profiles(tr::now));
 		profilesHeader->setEnabled(false);
 		constexpr auto kMaxLength = 30;
-		for (const auto &account : accounts) {
-			if (account->sessionExists()) {
+		for (const auto &stored : accounts) {
+			if (!stored.uniqueId && stored.name.isEmpty()) {
+				continue;
+			}
+			const auto &live = Core::App().domain().accounts();
+			const auto found = ranges::find(live, stored.index,
+				&Main::Domain::AccountWithIndex::index);
+			const auto account = (found != end(live))
+				? found->account.get()
+				: nullptr;
+			if (account && account->sessionExists()) {
 				const auto name = account->session().user()->name();
 				menu->addAction(
 					(name.size() > kMaxLength)
 						? (name.mid(0, kMaxLength) + Ui::kQEllipsis)
 						: name,
-					[account] {
-						Core::App().ensureSeparateWindowFor(account);
+					[weak = base::make_weak(account)] {
+						if (const auto strong = weak.get();
+							strong && strong->sessionExists()) {
+							Core::App().ensureSeparateWindowFor({ strong });
+						}
+					});
+			} else {
+				const auto &name = stored.name.isEmpty()
+					? stored.phone
+					: stored.name;
+				menu->addAction(
+					(name.size() > kMaxLength)
+						? (name.mid(0, kMaxLength) + Ui::kQEllipsis)
+						: name,
+					[index = stored.index] {
+						Core::App().domain().activateStored(index, {}, -1, true);
 					});
 			}
 		}

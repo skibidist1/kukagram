@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "boxes/premium_preview_box.h"
 #include "core/application.h"
+#include "core/kukagram_appearance.h"
 #include "data/data_peer.h"
 #include "data/data_user.h"
 #include "data/data_document.h"
@@ -39,12 +40,84 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "styles/style_polls.h"
 
+#include <QtGui/QBrush>
+#include <QtGui/QImage>
+
 #include <rpl/range.h>
 
 namespace Window {
 namespace {
 
 constexpr auto kReactionRestrictionToastDuration = 5 * crl::time(1000);
+
+void PaintStudioWallpaper(QPainter &p, QSize size, QRect clip) {
+	clip = clip.intersected(QRect(QPoint(), size));
+	if (clip.isEmpty()) {
+		return;
+	}
+
+	const auto width = qreal(size.width());
+	const auto height = qreal(size.height());
+	const auto extent = std::max(width, height);
+	const auto purpleFocus = QPointF(width * .86, height * .17);
+	const auto mintFocus = QPointF(width * .12, height * .89);
+	const auto glow = [&](QPointF center, qreal radius, QColor color) {
+		auto gradient = QRadialGradient(center, radius);
+		gradient.setColorAt(0., color);
+		color.setAlpha(color.alpha() / 3);
+		gradient.setColorAt(.53, color);
+		color.setAlpha(0);
+		gradient.setColorAt(1., color);
+		p.fillRect(clip, gradient);
+	};
+
+	p.save();
+	p.setClipRect(clip, Qt::IntersectClip);
+	p.fillRect(clip, QColor(16, 17, 24));
+	glow(purpleFocus, extent * .78, QColor(132, 68, 240, 121));
+	glow(mintFocus, extent * .62, QColor(54, 193, 155, 49));
+
+	static const auto dust = [] {
+		auto image = QImage(42, 42, QImage::Format_ARGB32_Premultiplied);
+		image.fill(Qt::transparent);
+		auto painter = QPainter(&image);
+		painter.setPen(QColor(210, 198, 252, 29));
+		painter.drawPoint(8, 9);
+		painter.setPen(QColor(179, 231, 219, 15));
+		painter.drawPoint(29, 30);
+		painter.end();
+		return image;
+	}();
+	p.fillRect(clip, QBrush(dust));
+
+	const auto radius = std::min(width, height) * .32;
+	if (radius >= 35.) {
+		const auto hq = PainterHighQualityEnabler(p);
+		const auto orbit = [&](QPointF focus, qreal angle, QColor color) {
+			p.save();
+			p.translate(focus);
+			p.rotate(angle);
+			p.setBrush(Qt::NoBrush);
+			p.setPen(QPen(color, 1.));
+			p.drawEllipse(QPointF(), radius, radius * .44);
+			color.setAlpha(color.alpha() / 2);
+			p.setPen(QPen(color, 1.));
+			p.drawEllipse(QPointF(), radius * 1.22, radius * .60);
+			p.restore();
+		};
+		orbit(purpleFocus, -28., QColor(198, 166, 255, 54));
+		orbit(mintFocus, 24., QColor(113, 234, 194, 38));
+
+		p.setPen(Qt::NoPen);
+		p.setBrush(QColor(210, 180, 255, 156));
+		p.drawEllipse(purpleFocus - QPointF(radius * .88, -radius * .47),
+			2.5, 2.5);
+		p.setBrush(QColor(130, 238, 200, 126));
+		p.drawEllipse(mintFocus + QPointF(radius * .91, radius * .41),
+			2., 2.);
+	}
+	p.restore();
+}
 
 [[nodiscard]] rpl::producer<QString> PeerThemeTokenValue(
 		not_null<PeerData*> peer) {
@@ -343,6 +416,16 @@ void SectionWidget::PaintBackground(
 		not_null<Ui::ChatTheme*> theme,
 		not_null<QWidget*> widget,
 		QRect clip) {
+	if (Core::KukagramAppearance::Current().studio) {
+		auto p = QPainter(widget);
+		const auto fromy = controller->content()->backgroundFromY();
+		p.translate(0, fromy);
+		PaintStudioWallpaper(
+			p,
+			QSize(widget->width(), controller->content()->height()),
+			clip.translated(0, -fromy));
+		return;
+	}
 	if (const auto id = theme->background().giftId) {
 		const auto fillHeight = controller->content()->height();
 		const auto fill = QSize(widget->width(), fillHeight);

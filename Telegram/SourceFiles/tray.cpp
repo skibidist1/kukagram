@@ -30,7 +30,11 @@ Tray::Tray() {
 }
 
 void Tray::create() {
+#ifdef Q_OS_MAC
+	_tray.setMenuBuilder([=] { rebuildMenu(); });
+#else
 	rebuildMenu();
+#endif
 	using WorkMode = Settings::WorkMode;
 	if (Core::App().settings().workMode() != WorkMode::WindowOnly) {
 		_tray.createIcon();
@@ -57,12 +61,18 @@ void Tray::create() {
 
 	Core::App().passcodeLockChanges(
 	) | rpl::on_next([=] {
+#ifdef Q_OS_MAC
+		_tray.dismissMenu();
+#else
 		rebuildMenu();
+#endif
 	}, _tray.lifetime());
 
+#ifndef Q_OS_MAC
 	TrayAccountsMenu::SetupChangesSubscription(
 		[=] { rebuildMenu(); },
 		_tray.lifetime());
+#endif
 
 	_tray.iconClicks(
 	) | rpl::on_next([=] {
@@ -108,7 +118,13 @@ void Tray::rebuildMenu() {
 			[=] { toggleSoundNotifications(); });
 	}
 
+#if defined Q_OS_MAC && !defined OS_MAC_STORE
+	_tray.addAction(tr::lng_quit_from_tray() | rpl::map([](QString text) {
+		return text.replace(u"Telegram"_q, AppName.utf16());
+	}), [] { Core::Quit(); });
+#else
 	_tray.addAction(tr::lng_quit_from_tray(), [] { Core::Quit(); });
+#endif
 
 	TrayAccountsMenu::Fill(_tray);
 

@@ -33,6 +33,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/peers/edit_peer_requests_box.h"
 #include "core/core_settings.h"
 #include "core/file_utilities.h"
+#include "core/kukagram_appearance.h"
 #include "core/mime_type.h"
 #include "history/view/history_view_draw_to_reply.h"
 #include "history/view/controls/history_view_bot_menu_button.h"
@@ -42,7 +43,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/emoji_config.h"
 #include "ui/chat/attach/attach_prepare.h"
 #include "ui/chat/choose_theme_controller.h"
+#include "ui/chat/studio_moon.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
+#include "ui/widgets/menu/menu_toggle.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/inner_dropdown.h"
 #include "ui/widgets/dropdown_menu.h"
@@ -223,6 +226,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_layers.h"
 
 #include <QtGui/QWindow>
+#include <QtGui/QContextMenuEvent>
 #include <QtCore/QMimeData>
 
 namespace {
@@ -264,6 +268,12 @@ struct HistoryWidget::ListRevealHold final : base::has_weak_ptr {
 	uint64 generation = 0;
 	bool releasePending = false;
 	bool refreshAwaited = false;
+};
+
+struct HistoryWidget::EmptyMoon {
+	Ui::Studio::Moon sphere;
+	std::optional<QPointF> dragPosition;
+	base::unique_qptr<Ui::PopupMenu> menu;
 };
 
 HistoryWidget::HistoryWidget(
@@ -381,6 +391,14 @@ HistoryWidget::HistoryWidget(
 , _topShadow(this) {
 	setAcceptDrops(true);
 	setVisualTabOrder(true);
+
+	Core::App().passcodeLockChanges(
+	) | rpl::on_next([=](bool locked) {
+		if (locked && _emptyMoon) {
+			stopEmptyMoonDrag();
+			_emptyMoon.reset();
+		}
+	}, lifetime());
 
 	// The controls inside these are created in an order of their own - the
 	// top bar's selection buttons start with the one placed last, the bars
@@ -3269,6 +3287,10 @@ void HistoryWidget::showHistory(
 		PeerId peerId,
 		MsgId showAtMsgId,
 		const Window::SectionShow &params) {
+	if (peerId && _emptyMoon) {
+		stopEmptyMoonDrag();
+		_emptyMoon.reset();
+	}
 	_pinnedClickedId = FullMsgId();
 	_minPinnedId = std::nullopt;
 	_showAtMsgParams = {};
@@ -6626,12 +6648,31 @@ void HistoryWidget::stopStreamedDraft() {
 }
 
 void HistoryWidget::leaveEventHook(QEvent *e) {
+	if (_emptyMoon && !(QApplication::mouseButtons() & Qt::LeftButton)) {
+		stopEmptyMoonDrag();
+	}
 	if (hasMouseTracking()) {
 		clearOverStates();
 	}
 }
 
 void HistoryWidget::mouseMoveEvent(QMouseEvent *e) {
+	if (e && _emptyMoon && _emptyMoon->dragPosition) {
+		const auto area = emptyMoonRect();
+		if ((e->buttons() & Qt::LeftButton)
+			&& canUseEmptyMoon()
+			&& Core::KukagramAppearance::MoonVisible()
+			&& !area.isEmpty()) {
+			const auto delta = e->position() - *_emptyMoon->dragPosition;
+			_emptyMoon->dragPosition = e->position();
+			_emptyMoon->sphere.rotate(
+				QPointF(-delta.x(), delta.y()) * (180. / area.width()));
+			update(area.toAlignedRect());
+			e->accept();
+			return;
+		}
+		stopEmptyMoonDrag();
+	}
 	const auto pos = e ? e->pos() : mapFromGlobal(QCursor::pos());
 	updateOverStates(pos);
 }
@@ -6706,6 +6747,12 @@ void HistoryWidget::leaveToChildEvent(QEvent *e, QWidget *child) {
 }
 
 void HistoryWidget::mouseReleaseEvent(QMouseEvent *e) {
+	if (e->button() == Qt::LeftButton
+		&& _emptyMoon
+		&& _emptyMoon->dragPosition) {
+		stopEmptyMoonDrag();
+		e->accept();
+	}
 }
 
 void HistoryWidget::sendBotCommand(const Bot::SendCommandRequest &request) {
@@ -9347,6 +9394,23 @@ bool HistoryWidget::cornerButtonsHas(HistoryView::CornerButtonType type) {
 
 void HistoryWidget::mousePressEvent(QMouseEvent *e) {
 	if (!_list) {
+		if (e->button() == Qt::LeftButton
+			&& e->modifiers() == Qt::NoModifier
+			&& Core::KukagramAppearance::MoonVisible()
+			&& canUseEmptyMoon()) {
+			const auto area = emptyMoonRect();
+			const auto delta = e->position() - area.center();
+			const auto radius = area.width() / 2.;
+			if (delta.x() * delta.x() + delta.y() * delta.y() < radius * radius) {
+				if (!_emptyMoon) {
+					_emptyMoon = std::make_unique<EmptyMoon>();
+				}
+				_emptyMoon->dragPosition = e->position();
+				setCursor(Qt::ClosedHandCursor);
+				e->accept();
+				return;
+			}
+		}
 		// Remove focus from the chats list search.
 		setFocus();
 
@@ -9403,6 +9467,70 @@ void HistoryWidget::mousePressEvent(QMouseEvent *e) {
 	} else if (_suggestOptions) {
 		_suggestOptions->edit();
 	}
+}
+
+bool HistoryWidget::canUseEmptyMoon() const {
+	return !_list
+		&& Core::KukagramAppearance::Current().studio
+		&& !Core::Quitting()
+		&& !Core::App().passcodeLocked()
+		&& Ui::Studio::Moon::available();
+}
+
+QRectF HistoryWidget::emptyMoonRect() const {
+	const auto diameter = std::min({ 208., width() * .28, height() * .23 });
+	if (diameter < 36.) {
+		return {};
+	}
+	const auto radius = diameter / 2.;
+	const auto center = QPointF(
+		std::min(width() * .78, width() - radius - 16.),
+		std::max(height() * .20, radius + 16.));
+	return QRectF(center - QPointF(radius, radius), QSizeF(diameter, diameter));
+}
+
+void HistoryWidget::stopEmptyMoonDrag() {
+	if (_emptyMoon && _emptyMoon->dragPosition) {
+		_emptyMoon->dragPosition.reset();
+		unsetCursor();
+	}
+}
+
+void HistoryWidget::contextMenuEvent(QContextMenuEvent *e) {
+	if (!canUseEmptyMoon()) {
+		Window::AbstractSectionWidget::contextMenuEvent(e);
+		return;
+	}
+	if (!_emptyMoon) {
+		_emptyMoon = std::make_unique<EmptyMoon>();
+	}
+	stopEmptyMoonDrag();
+	const auto visible = Core::KukagramAppearance::MoonVisible();
+	_emptyMoon->menu = base::make_unique_q<Ui::PopupMenu>(this);
+	auto toggle = base::make_unique_q<Ui::Menu::Toggle>(
+		_emptyMoon->menu->menu(),
+		_emptyMoon->menu->st().menu,
+		u"Показать Луну"_q,
+		[=] {
+			if (!canUseEmptyMoon()) {
+				return;
+			}
+			if (Core::KukagramAppearance::SetMoonVisible(!visible)) {
+				update(emptyMoonRect().toAlignedRect());
+			} else {
+				controller()->showToast(u"Не удалось сохранить настройку Луны."_q);
+			}
+		},
+		nullptr,
+		nullptr);
+	toggle->action()->setCheckable(true);
+	toggle->action()->setChecked(visible);
+	toggle->finishAnimating();
+	_emptyMoon->menu->addAction(std::move(toggle));
+	_emptyMoon->menu->popup(e->reason() == QContextMenuEvent::Keyboard
+		? mapToGlobal(rect().center())
+		: e->globalPos());
+	e->accept();
 }
 
 void HistoryWidget::editDraftOptions() {
@@ -11799,6 +11927,15 @@ void HistoryWidget::paintEvent(QPaintEvent *e) {
 			}
 		}
 	} else {
+		const auto moon = emptyMoonRect();
+		if (clip.intersects(moon.toAlignedRect())
+			&& Core::KukagramAppearance::MoonVisible()
+			&& canUseEmptyMoon()) {
+			if (!_emptyMoon) {
+				_emptyMoon = std::make_unique<EmptyMoon>();
+			}
+			_emptyMoon->sphere.paint(p, moon);
+		}
 		const auto w = 0
 			+ st::msgServiceFont->width(tr::lng_willbe_history(tr::now))
 			+ st::msgPadding.left()

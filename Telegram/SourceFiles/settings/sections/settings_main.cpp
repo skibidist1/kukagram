@@ -399,6 +399,15 @@ void BuildSectionButtons(SectionBuilder &builder) {
 		.keywords = { u"themes"_q, u"appearance"_q, u"stickers"_q },
 	});
 
+#ifdef Q_OS_MAC
+	builder.addButton({
+		.title = rpl::single(u"Оформление kukagram"_q),
+		.icon = { &st::menuIconChatBubble },
+		.onClick = [] { Core::App().showKukagramAppearance(); },
+		.keywords = { u"studio"_q, u"дизайн"_q, u"оформление"_q },
+	});
+#endif // Q_OS_MAC
+
 	{ // Folders
 		const auto preload = [=] {
 			session->data().chatsFilters().requestSuggested();
@@ -694,8 +703,8 @@ rpl::producer<QString> Main::title() {
 }
 
 void Main::fillTopBarMenu(const Ui::Menu::MenuCallback &addAction) {
-	const auto &list = Core::App().domain().accounts();
-	if (list.size() < Core::App().domain().maxAccounts()) {
+	if (Core::App().domain().storedAccountsCount()
+		< Core::App().domain().maxAccounts()) {
 		addAction(tr::lng_menu_add_account(tr::now), [=] {
 			Core::App().setActivePrimaryWindow(&controller()->window());
 			Core::App().domain().addActivated(MTP::Environment{});

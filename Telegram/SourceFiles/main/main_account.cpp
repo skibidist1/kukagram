@@ -60,6 +60,34 @@ Account::~Account() {
 	destroySession(DestroyReason::Quitting);
 }
 
+bool Account::checkpointForRetirement() {
+	if (_retiring || _loggingOut || _destroyingSession || !_session) {
+		return false;
+	}
+	_session->saveSettingsNowIfNeeded();
+	return _local->checkpointForRetirement();
+}
+
+void Account::prepareForRetirement() {
+	if (_retiring) {
+		return;
+	}
+	Expects(!_loggingOut);
+	Expects(!_destroyingSession);
+
+	// A detached account must not depend on a later fallible write.
+	_retiring = true;
+	_local->stopWritesForRetirement();
+	_lifetime.destroy();
+	if (_mtp) {
+		_mtp->clearGlobalHandlers();
+	}
+	if (_mtpForKeysDestroy) {
+		_mtpForKeysDestroy->clearGlobalHandlers();
+	}
+	destroySession(DestroyReason::Quitting);
+}
+
 Storage::Domain &Account::domainLocal() const {
 	return _domain->local();
 }
@@ -380,12 +408,12 @@ void Account::setMtpAuthorization(const QByteArray &serialized) {
 	auto legacyMainDcId = Serialize::read<qint32>(stream);
 	auto userId = quint64();
 	auto mainDcId = qint32();
-	if (((uint64(legacyUserId) << 32) | uint64(legacyMainDcId))
+	if (((quint64(uint32(legacyUserId)) << 32) | uint32(legacyMainDcId))
 		== kWideIdsTag) {
 		userId = Serialize::read<quint64>(stream);
 		mainDcId = Serialize::read<qint32>(stream);
 	} else {
-		userId = legacyUserId;
+		userId = uint32(legacyUserId);
 		mainDcId = legacyMainDcId;
 	}
 	if (stream.status() != QDataStream::Ok) {
@@ -394,30 +422,38 @@ void Account::setMtpAuthorization(const QByteArray &serialized) {
 		return;
 	}
 
-	setSessionUserId(userId);
-	_mtpFields.mainDcId = mainDcId;
-
-	const auto readKeys = [&](auto &keys) {
+	const auto readKeys = [&](MTP::AuthKeysList &keys) {
+		constexpr auto kKeyRecordSize = qint64(
+			sizeof(qint32) + MTP::AuthKey::kSize);
 		const auto count = Serialize::read<qint32>(stream);
-		if (stream.status() != QDataStream::Ok) {
-			LOG(("MTP Error: "
-				"Could not read keys count from mtp authorization."));
-			return;
+		if (stream.status() != QDataStream::Ok || count < 0
+			|| count > stream.device()->bytesAvailable() / kKeyRecordSize) {
+			return false;
 		}
-		keys.reserve(count);
+		keys.reserve(keys.size() + count);
 		for (auto i = 0; i != count; ++i) {
 			const auto dcId = Serialize::read<qint32>(stream);
 			const auto keyData = Serialize::read<MTP::AuthKey::Data>(stream);
 			if (stream.status() != QDataStream::Ok) {
-				LOG(("MTP Error: "
-					"Could not read key from mtp authorization."));
-				return;
+				return false;
 			}
-			keys.push_back(std::make_shared<MTP::AuthKey>(MTP::AuthKey::Type::ReadFromFile, dcId, keyData));
+			keys.push_back(std::make_shared<MTP::AuthKey>(
+				MTP::AuthKey::Type::ReadFromFile,
+				dcId,
+				keyData));
 		}
+		return true;
 	};
-	readKeys(_mtpFields.keys);
-	readKeys(_mtpKeysToDestroy);
+	auto keys = _mtpFields.keys;
+	auto keysToDestroy = _mtpKeysToDestroy;
+	if (!readKeys(keys) || !readKeys(keysToDestroy) || !stream.atEnd()) {
+		LOG(("MTP Error: Could not read keys from mtp authorization."));
+		return;
+	}
+	setSessionUserId(userId);
+	_mtpFields.mainDcId = mainDcId;
+	_mtpFields.keys = std::move(keys);
+	_mtpKeysToDestroy = std::move(keysToDestroy);
 	LOG(("MTP Info: "
 		"read keys, current: %1, to destroy: %2"
 		).arg(_mtpFields.keys.size()
@@ -438,10 +474,13 @@ void Account::startMtp(std::unique_ptr<MTP::Config> config) {
 	const auto writingKeys = _mtp->lifetime().make_state<bool>(false);
 	_mtp->writeKeysRequests(
 	) | rpl::filter([=] {
-		return !*writingKeys;
+		return !_retiring && !*writingKeys;
 	}) | rpl::on_next([=] {
 		*writingKeys = true;
 		Ui::PostponeCall(_mtp.get(), [=] {
+			if (_retiring) {
+				return;
+			}
 			local().writeMtpData();
 			*writingKeys = false;
 		});
@@ -452,10 +491,13 @@ void Account::startMtp(std::unique_ptr<MTP::Config> config) {
 		_mtp->config().updates(),
 		_mtp->dcOptions().changed() | rpl::to_empty
 	) | rpl::filter([=] {
-		return !*writingConfig;
+		return !_retiring && !*writingConfig;
 	}) | rpl::on_next([=] {
 		*writingConfig = true;
 		Ui::PostponeCall(_mtp.get(), [=] {
+			if (_retiring) {
+				return;
+			}
 			local().writeMtpConfig();
 			*writingConfig = false;
 		});
@@ -528,8 +570,13 @@ bool Account::checkForNewSession(const MTP::Response &message) {
 	return true;
 }
 
+void Account::logOutThen(Fn<void()> done) {
+	_logoutDone.push_back(std::move(done));
+	logOut();
+}
+
 void Account::logOut() {
-	if (_loggingOut) {
+	if (_retiring || _loggingOut) {
 		return;
 	}
 	_loggingOut = true;
@@ -546,7 +593,7 @@ bool Account::loggingOut() const {
 }
 
 void Account::forcedLogOut() {
-	if (sessionExists()) {
+	if (!_retiring && sessionExists()) {
 		loggedOut();
 		resetAuthorizationKeys();
 	}
@@ -559,6 +606,14 @@ void Account::loggedOut() {
 	Tgw::EraseStorage(this);
 	local().reset();
 	cSetOtherOnline(0);
+	const auto callbacks = base::take(_logoutDone);
+	const auto weak = base::make_weak(this);
+	for (const auto &callback : callbacks) {
+		if (!weak) {
+			return;
+		}
+		callback();
+	}
 }
 
 void Account::destroyMtpKeys(MTP::AuthKeysList &&keys) {
@@ -584,12 +639,20 @@ void Account::destroyMtpKeys(MTP::AuthKeysList &&keys) {
 		std::move(destroyFields));
 	_mtpForKeysDestroy->writeKeysRequests(
 	) | rpl::on_next([=] {
-		local().writeMtpData();
+		if (!_retiring) {
+			local().writeMtpData();
+		}
 	}, _mtpForKeysDestroy->lifetime());
 	_mtpForKeysDestroy->allKeysDestroyed(
 	) | rpl::on_next([=] {
+		if (_retiring) {
+			return;
+		}
 		LOG(("MTP Info: all keys scheduled for destroy are destroyed."));
 		crl::on_main(this, [=] {
+			if (_retiring) {
+				return;
+			}
 			_mtpForKeysDestroy = nullptr;
 			local().writeMtpData();
 		});

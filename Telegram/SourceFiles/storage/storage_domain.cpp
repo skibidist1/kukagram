@@ -6,10 +6,13 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "storage/storage_domain.h"
+#include "storage/storage_account.h"
 
 #include "core/version.h"
 #include "storage/details/storage_file_utilities.h"
+#include "storage/details/storage_settings_scheme.h"
 #include "storage/serialize_common.h"
+#include "storage/serialize_peer.h"
 #include "mtproto/mtproto_config.h"
 #include "main/main_domain.h"
 #include "main/main_account.h"
@@ -24,6 +27,11 @@ struct PasscodeWrap final {
 	quint32 generation = 0;
 	QByteArray salt;
 	QByteArray keyEncrypted;
+}
+
+void Domain::startStored(not_null<Main::Account*> account) {
+	Expects(_localKey != nullptr);
+	account->start(account->prepareToStart(_localKey));
 };
 
 // The two legacy flags travel together and are cleared together. legacy says
@@ -130,11 +138,62 @@ constexpr auto kMaxWrapCount = quint32(2);
 	return recovered && recovered->equals(localKey);
 }
 
+constexpr auto kImportKeyFileLimit = qint64(1024 * 1024);
+constexpr auto kImportMapFileLimit = qint64(16 * 1024 * 1024);
+constexpr auto kImportAuthFileLimit = qint64(64 * 1024);
+constexpr auto kImportSelfLimit = qsizetype(64 * 1024);
+constexpr auto kImportMaxKeys = qint32(128);
+constexpr auto kImportMaxDcId = qint32(1000);
+constexpr auto kImportSelfSerialized = quint32(0x15);
+constexpr auto kImportConfigVersion = qint32(1);
+constexpr auto kImportPeerVersionTag = quint64(0x77FF'FFFF'FFFF'FFFFULL);
+constexpr auto kImportMaxPeerVersion = qint32(3);
+constexpr auto kImportPasscodeLimit = qsizetype(4096);
+constexpr auto kImportSaltLimit = qsizetype(1024);
+constexpr auto kImportAggregateLimit = qsizetype(64 * 1024 * 1024);
+constexpr auto kImportMaxScryptN = quint32(131'072);
+constexpr auto kImportMaxScryptR = quint32(8);
+constexpr auto kImportMaxScryptP = quint32(16);
+constexpr auto kImportWrappedKeySize = qsizetype(16
+	+ ((sizeof(uint32) + MTP::AuthKey::kSize + 15) / 16) * 16);
+
+[[nodiscard]] bool ReadImportBytes(
+		QDataStream &stream,
+		QByteArray &result,
+		qsizetype limit) {
+	auto size = quint32();
+	stream >> size;
+	if (stream.status() != QDataStream::Ok) {
+		return false;
+	} else if (size == std::numeric_limits<quint32>::max()) {
+		result = {};
+		return true;
+	} else if (size > limit || size > stream.device()->bytesAvailable()) {
+		stream.setStatus(QDataStream::ReadCorruptData);
+		return false;
+	}
+	result.resize(size);
+	if (stream.readRawData(result.data(), size) != size) {
+		stream.setStatus(QDataStream::ReadPastEnd);
+		return false;
+	}
+	return true;
+}
+
 [[nodiscard]] ReadKeyDataResult ReadKeyData(
 		QDataStream &stream,
 		KeyData &data,
-		QByteArray &infoEncrypted) {
-	stream >> data.openSalt >> data.openKeyEncrypted >> infoEncrypted;
+		QByteArray &infoEncrypted,
+		bool strict = false) {
+	if (strict) {
+		if (!ReadImportBytes(stream, data.openSalt, LocalEncryptSaltSize)
+			|| !ReadImportBytes(stream, data.openKeyEncrypted, kImportSaltLimit)
+			|| !ReadImportBytes(stream, infoEncrypted, kImportKeyFileLimit)) {
+			return ReadKeyDataResult::Failed;
+		}
+	} else {
+		stream >> data.openSalt >> data.openKeyEncrypted >> infoEncrypted;
+	}
 	if (!CheckStreamStatus(stream)) {
 		return ReadKeyDataResult::Failed;
 	} else if (data.openSalt.size() != LocalEncryptSaltSize) {
@@ -147,7 +206,13 @@ constexpr auto kMaxWrapCount = quint32(2);
 		return ReadKeyDataResult::Success;
 	}
 	auto trailer = QByteArray();
-	stream >> trailer;
+	if (strict) {
+		if (!ReadImportBytes(stream, trailer, kImportKeyFileLimit)) {
+			return ReadKeyDataResult::Failed;
+		}
+	} else {
+		stream >> trailer;
+	}
 	if (!CheckStreamStatus(stream)) {
 		return ReadKeyDataResult::Failed;
 	}
@@ -183,9 +248,15 @@ constexpr auto kMaxWrapCount = quint32(2);
 			>> wrap.generation
 			>> wrap.kdf.memory
 			>> wrap.kdf.time
-			>> wrap.kdf.parallel
-			>> wrap.salt
-			>> wrap.keyEncrypted;
+			>> wrap.kdf.parallel;
+		if (strict) {
+			if (!ReadImportBytes(inner, wrap.salt, kImportSaltLimit)
+				|| !ReadImportBytes(inner, wrap.keyEncrypted, kImportSaltLimit)) {
+				return ReadKeyDataResult::Failed;
+			}
+		} else {
+			inner >> wrap.salt >> wrap.keyEncrypted;
+		}
 		if (!CheckStreamStatus(inner)) {
 			return ReadKeyDataResult::Failed;
 		} else if (!wrap.kdf.costWithinLimits()) {
@@ -339,9 +410,7 @@ StartResult Domain::start(PasscodeDerivation derived) {
 	} else if (modern == StartModernResult::IncorrectPasscode) {
 		return StartResult::IncorrectPasscode;
 	} else if (modern == StartModernResult::Failed) {
-		// startFromScratch() drops a local key startModern() already read.
-		startFromScratch();
-		return StartResult::Success;
+		return StartResult::ProfileReadError;
 	}
 	auto legacy = std::make_unique<Main::Account>(_owner, _dataName, 0);
 	const auto result = legacy->legacyStart(derived._passcode);
@@ -494,8 +563,11 @@ Domain::StartModernResult Domain::startModern(
 	const auto name = ComputeKeyName(_dataName);
 
 	FileReadDescriptor file;
-	if (!ReadFile(file, name, BaseGlobalPath())) {
-		return StartModernResult::Empty;
+	if (!ReadFile(file, name, BaseGlobalPath(), false)) {
+		auto base = BaseGlobalPath() + name;
+		return KeyAlreadyUsed(base)
+			? StartModernResult::Failed
+			: StartModernResult::Empty;
 	}
 	LOG(("App Info: reading accounts info..."));
 
@@ -669,7 +741,7 @@ Domain::StartModernResult Domain::startModern(
 		return StartModernResult::Failed;
 	}
 
-	if (!info.stream.atEnd()) {
+	if (info.stream.device()->bytesAvailable() >= qint64(sizeof(qint32))) {
 		info.stream >> active;
 	}
 	_owner->activateFromStorage(active);

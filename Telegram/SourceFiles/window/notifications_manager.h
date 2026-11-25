@@ -130,6 +130,7 @@ public:
 	[[nodiscard]] bool volumeSupported() const;
 	[[nodiscard]] rpl::producer<bool> volumeSupportedValue() const;
 
+	// Explicit preview from the ringtone picker and volume controls.
 	void playSound(
 		not_null<Main::Session*> session,
 		DocumentId id,
@@ -205,6 +206,10 @@ private:
 
 	void showNext();
 	void showGrouped();
+	void clearGrouped();
+	void clearGroupedFrom(
+		not_null<Data::Thread*> thread,
+		Fn<bool(not_null<HistoryItem*>)> filter = nullptr);
 	void ensureSoundCreated();
 	[[nodiscard]] not_null<Media::Audio::Track*> lookupSound(
 		not_null<Data::Session*> owner,

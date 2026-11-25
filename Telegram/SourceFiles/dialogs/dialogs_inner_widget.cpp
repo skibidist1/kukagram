@@ -29,6 +29,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "core/click_handler_types.h"
 #include "core/file_utilities.h"
+#include "core/kukagram_appearance.h"
 #include "core/shortcuts.h"
 #include "core/ui_integration.h"
 #include "ui/widgets/buttons.h"
@@ -1048,6 +1049,12 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 		_controller->isGifPausedAtLeastFor(Window::GifPauseReason::Any));
 	if (!_savedSublists && _controller->contentOverlapped(this, e)) {
 		return;
+	}
+	const auto studio = Core::KukagramAppearance::Current().studio;
+	if (_rowsScrollCacheStudio != studio) {
+		_rowsScrollCacheStudio = studio;
+		_rowsScrollCache.clear();
+		_cachedRows.clear();
 	}
 	const auto activeEntry = _controller->activeChatEntryCurrent();
 	const auto videoPaused = _controller->isGifPausedAtLeastFor(

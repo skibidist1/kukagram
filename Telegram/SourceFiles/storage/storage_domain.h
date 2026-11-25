@@ -24,6 +24,36 @@ struct PasscodeWrap;
 struct KeyData;
 struct WalletEngineValue;
 
+enum class TdataImportError {
+	None,
+	NotFound,
+	PasscodeNeeded,
+	WrongPasscode,
+	Unsupported,
+	Corrupt,
+};
+
+struct ImportedAccount {
+	QByteArray authorization;
+	QByteArray self;
+	int selfStreamVersion = 0;
+	int sourceIndex = 0;
+	uint64 uniqueId = 0;
+	QString displayName;
+	QString phone;
+	bool testMode = false;
+};
+
+struct TdataImportResult {
+	TdataImportError error = TdataImportError::None;
+	std::vector<ImportedAccount> accounts;
+	QString sourceFolder;
+};
+
+[[nodiscard]] TdataImportResult ReadTdataAccounts(
+	const QString &sourceDirectory,
+	const QByteArray &passcode = {});
+
 // The memory-hard step of a passcode check or change, cut out of Domain as a
 // value so that it can run on a worker. It holds copies only - the wrap the
 // typed bytes have to open (the live passcode wrap, the legacy blob, or a
@@ -86,6 +116,7 @@ enum class StartResult : uchar {
 	Success,
 	IncorrectPasscode,
 	IncorrectPasscodeLegacy,
+	ProfileReadError,
 };
 
 enum class SetPasscodeResult : uchar {
@@ -131,7 +162,9 @@ public:
 	void startAdded(
 		not_null<Main::Account*> account,
 		std::unique_ptr<MTP::Config> config);
+	void startStored(not_null<Main::Account*> account);
 	void writeAccounts();
+	[[nodiscard]] bool writeAccountsChecked();
 	void startFromScratch();
 
 	[[nodiscard]] WalletEngineValue readWalletKeyring() const;

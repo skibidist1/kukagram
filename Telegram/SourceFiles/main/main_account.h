@@ -59,8 +59,11 @@ public:
 		std::unique_ptr<SessionSettings> settings);
 
 	void logOut();
+	void logOutThen(Fn<void()> done);
 	void forcedLogOut();
 	[[nodiscard]] bool loggingOut() const;
+	[[nodiscard]] bool checkpointForRetirement();
+	void prepareForRetirement();
 
 	[[nodiscard]] AppConfig &appConfig() const {
 		Expects(_appConfig != nullptr);
@@ -164,8 +167,10 @@ private:
 	std::unique_ptr<SessionSettings> _storedSessionSettings;
 	MTP::Instance::Fields _mtpFields;
 	MTP::AuthKeysList _mtpKeysToDestroy;
+	std::vector<Fn<void()>> _logoutDone;
 	bool _loggingOut = false;
 	bool _destroyingSession = false;
+	bool _retiring = false;
 
 	rpl::lifetime _lifetime;
 

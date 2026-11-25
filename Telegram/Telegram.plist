@@ -4,8 +4,10 @@
 <dict>
 	<key>CFBundleExecutable</key>
 	<string>@output_name@</string>
+	<key>CFBundleDisplayName</key>
+	<string>@output_name@</string>
 	<key>CFBundleGetInfoString</key>
-	<string>Telegram Desktop messaging app</string>
+	<string>Unofficial Telegram desktop client</string>
 	<key>CFBundleIconFile</key>
 	<string>Icon.icns</string>
 	<key>CFBundleIconName</key>

@@ -358,6 +358,7 @@ protected:
 	void resizeEvent(QResizeEvent *e) override;
 	void keyPressEvent(QKeyEvent *e) override;
 	void mousePressEvent(QMouseEvent *e) override;
+	void contextMenuEvent(QContextMenuEvent *e) override;
 	void paintEvent(QPaintEvent *e) override;
 	void leaveEventHook(QEvent *e) override;
 	void mouseReleaseEvent(QMouseEvent *e) override;
@@ -367,6 +368,11 @@ public:
 	void synteticScrollToY(int y);
 
 private:
+	struct EmptyMoon;
+	[[nodiscard]] bool canUseEmptyMoon() const;
+	[[nodiscard]] QRectF emptyMoonRect() const;
+	void stopEmptyMoonDrag();
+
 	using TabbedPanel = ChatHelpers::TabbedPanel;
 	using TabbedSelector = ChatHelpers::TabbedSelector;
 	using VoiceToSend = HistoryView::Controls::VoiceToSend;
@@ -892,6 +898,7 @@ private:
 	object_ptr<HistoryView::TopBarWidget> _topBar;
 	object_ptr<Ui::ElasticScroll> _scroll;
 	QPointer<HistoryInner> _list;
+	std::unique_ptr<EmptyMoon> _emptyMoon;
 	base::weak_ptr<ListRevealHold> _listRevealHold;
 	History *_migrated = nullptr;
 	History *_history = nullptr;
