@@ -28,11 +28,7 @@ PeerData *readPeer(
 	not_null<Main::Session*> session,
 	int streamAppVersion,
 	QDataStream &stream);
-QString peekUserPhone(int streamAppVersion, QDataStream &stream);
-
-// Lets a stored account be listed before its session is started.
 struct UserIdentity {
-	PeerId id = 0;
 	QString firstName;
 	QString lastName;
 	QString phone;
@@ -40,5 +36,6 @@ struct UserIdentity {
 [[nodiscard]] std::optional<UserIdentity> peekUserIdentity(
 	int streamAppVersion,
 	QDataStream &stream);
+QString peekUserPhone(int streamAppVersion, QDataStream &stream);
 
 } // namespace Serialize
