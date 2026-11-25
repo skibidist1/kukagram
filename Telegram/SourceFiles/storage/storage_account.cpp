@@ -133,6 +133,21 @@ auto EmptyMessageDraftSources()
 	return cWorkingDir() + u"tdata/"_q;
 }
 
+[[nodiscard]] QByteArray ReadStoredAuthorization(
+		FileKey key,
+		const MTP::AuthKeyPtr &localKey) {
+	auto file = FileReadDescriptor();
+	if (!ReadEncryptedFile(file, key, BaseGlobalPath(), localKey, false)) {
+		return {};
+	}
+	auto type = quint32();
+	auto authorization = QByteArray();
+	file.stream >> type >> authorization;
+	return (type == dbiMtpAuthorization && CheckStreamStatus(file.stream))
+		? authorization
+		: QByteArray();
+}
+
 [[nodiscard]] QString ComputeDatabasePath(const QString &dataName) {
 	return BaseGlobalPath()
 		+ "user_" + dataName
@@ -194,7 +209,7 @@ Account::Account(not_null<Main::Account*> owner, const QString &dataName)
 Account::~Account() {
 	Expects(!_writeSearchSuggestionsTimer.isActive());
 
-	if (_localKey) {
+	if (_localKey && !_writesStopped) {
 		if (_prefsChanged) {
 			writePrefs();
 		}
@@ -216,10 +231,16 @@ StartResult Account::legacyStart(const QByteArray &passcode) {
 	const auto result = readMapWith(MTP::AuthKeyPtr(), passcode);
 	if (result == ReadMapResult::Failed) {
 		Assert(_localKey == nullptr);
+		auto map = _basePath + u"map"_q;
+		auto account = BaseGlobalPath() + ToFilePart(_dataNameKey);
+		if (KeyAlreadyUsed(map) || KeyAlreadyUsed(account)) {
+			return StartResult::ProfileReadError;
+		}
 	} else if (result == ReadMapResult::IncorrectPasscode) {
 		return StartResult::IncorrectPasscodeLegacy;
+	} else {
+		clearLegacyFiles();
 	}
-	clearLegacyFiles();
 	return StartResult::Success;
 }
 
@@ -227,8 +248,13 @@ std::unique_ptr<MTP::Config> Account::start(MTP::AuthKeyPtr localKey) {
 	Expects(localKey != nullptr);
 
 	_localKey = std::move(localKey);
-	readMapWith(_localKey);
-	clearLegacyFiles();
+	if (readMapWith(_localKey) == ReadMapResult::Success) {
+		clearLegacyFiles();
+	} else if (const auto authorization = ReadStoredAuthorization(
+			_dataNameKey,
+			_localKey); !authorization.isEmpty()) {
+		_owner->setMtpAuthorization(authorization);
+	}
 	return readMtpConfig();
 }
 
@@ -237,6 +263,71 @@ void Account::startAdded(MTP::AuthKeyPtr localKey) {
 
 	_localKey = std::move(localKey);
 	clearLegacyFiles();
+}
+
+Main::StoredAccount Account::readStoredAccount(
+		MTP::AuthKeyPtr localKey,
+		int index) const {
+	auto result = Main::StoredAccount{
+		.index = index,
+		.name = tr::lng_shortcuts_show_account_n(tr::now, lt_index, QString::number(index + 1)),
+	};
+	FileReadDescriptor mapData;
+	if (ReadFile(mapData, u"map"_q, _basePath, false)) {
+		auto salt = QByteArray();
+		auto oldKey = QByteArray();
+		auto encrypted = QByteArray();
+		mapData.stream >> salt >> oldKey >> encrypted;
+		EncryptedDescriptor map;
+		if (CheckStreamStatus(mapData.stream)
+			&& DecryptLocal(map, encrypted, localKey)) {
+			auto type = quint32();
+			map.stream >> type;
+			if (type == lskSelfSerialized) {
+				auto self = QByteArray();
+				map.stream >> self;
+				QDataStream stream(self);
+				if (const auto identity = Serialize::peekUserIdentity(
+						mapData.version,
+						stream)) {
+					const auto name = (identity->firstName + ' '
+						+ identity->lastName).trimmed();
+					if (!name.isEmpty()) {
+						result.name = name;
+					}
+					result.phone = identity->phone;
+				}
+			}
+		}
+	}
+	if (const auto authorization = ReadStoredAuthorization(
+			_dataNameKey,
+			localKey); !authorization.isEmpty()) {
+		QDataStream stream(authorization);
+		stream.setVersion(QDataStream::Qt_5_1);
+		auto user = qint32();
+		auto dc = qint32();
+		stream >> user >> dc;
+		auto id = quint64(uint32(user));
+		if (((quint64(uint32(user)) << 32) | uint32(dc)) == ~quint64(0)) {
+			stream >> id >> dc;
+		}
+		if (CheckStreamStatus(stream)) {
+			result.uniqueId = id;
+			result.authorizationKnown = true;
+		}
+	}
+	FileReadDescriptor configData;
+	if (ReadEncryptedFile(configData, u"config"_q, _basePath, localKey, false)) {
+		auto serialized = QByteArray();
+		configData.stream >> serialized;
+		if (const auto config = MTP::Config::FromSerialized(serialized)) {
+			if (result.uniqueId && config->isTestMode()) {
+				result.uniqueId |= 0x0100'0000'0000'0000ULL;
+			}
+		}
+	}
+	return result;
 }
 
 void Account::clearLegacyFiles() {
@@ -318,7 +409,7 @@ Account::ReadMapResult Account::readMapWith(
 	auto ms = crl::now();
 
 	FileReadDescriptor mapData;
-	if (!ReadFile(mapData, u"map"_q, _basePath)) {
+	if (!ReadFile(mapData, u"map"_q, _basePath, bool(localKey))) {
 		return ReadMapResult::Failed;
 	}
 	LOG(("App Info: reading map..."));
@@ -623,18 +714,27 @@ Account::ReadMapResult Account::readMapWith(
 }
 
 void Account::writeMapDelayed() {
+	if (_writesStopped) {
+		return;
+	}
 	_mapChanged = true;
 	_writeMapTimer.callOnce(kDelayedWriteTimeout);
 }
 
 void Account::writeMapQueued() {
+	if (_writesStopped) {
+		return;
+	}
 	_mapChanged = true;
 	crl::on_main(_owner, [=] {
 		writeMap();
 	});
 }
 
-void Account::writeMap() {
+void Account::writeMap(QByteArray *written) {
+	if (_writesStopped) {
+		return;
+	}
 	Expects(_localKey != nullptr);
 
 	_writeMapTimer.cancel();
@@ -811,6 +911,9 @@ void Account::writeMap() {
 			mapData.stream << quint64(value) << SerializePeerId(key);
 		}
 	}
+	if (written) {
+		*written = mapData.data.mid(sizeof(uint32));
+	}
 	map.writeEncrypted(mapData, _localKey);
 
 	_mapChanged = false;
@@ -899,10 +1002,10 @@ void Account::reset() {
 	Local::sync();
 }
 
-void Account::writeLocations() {
+bool Account::writeLocations(bool sync) {
 	_writeLocationsTimer.cancel();
-	if (!_locationsChanged) {
-		return;
+	if (_writesStopped || (!sync && !_locationsChanged)) {
+		return !_writesStopped;
 	}
 	_locationsChanged = false;
 
@@ -973,12 +1076,20 @@ void Account::writeLocations() {
 
 		data.stream << quint32(0) << _downloadsSerialized;
 
-		FileWriteDescriptor file(_locationsKey, _basePath);
+		FileWriteDescriptor file(_locationsKey, _basePath, sync);
 		file.writeEncrypted(data, _localKey);
+		if (!file.finish()) {
+			_locationsChanged = true;
+			return false;
+		}
 	}
+	return true;
 }
 
 void Account::writeLocationsQueued() {
+	if (_writesStopped) {
+		return;
+	}
 	_locationsChanged = true;
 	crl::on_main(_owner, [=] {
 		writeLocations();
@@ -986,6 +1097,9 @@ void Account::writeLocationsQueued() {
 }
 
 void Account::writeLocationsDelayed() {
+	if (_writesStopped) {
+		return;
+	}
 	_locationsChanged = true;
 	_writeLocationsTimer.callOnce(kDelayedWriteTimeout);
 }
@@ -1068,7 +1182,90 @@ void Account::writeSessionSettings() {
 	writeSessionSettings(nullptr);
 }
 
-void Account::writeSessionSettings(Main::SessionSettings *stored) {
+bool Account::checkpointForRetirement() {
+	if (_writesStopped) {
+		return false;
+	}
+	Expects(_owner->sessionExists());
+
+	if (!writeSearchSuggestionsIfNeeded(true)
+		|| !writeLocations(true)
+		|| !writePrefs(true)) {
+		return false;
+	}
+	return writeImportedSession();
+}
+
+void Account::stopWritesForRetirement() {
+	_writeMapTimer.cancel();
+	_writePrefsTimer.cancel();
+	_writeLocationsTimer.cancel();
+	_writeSearchSuggestionsTimer.cancel();
+	_writesStopped = true;
+}
+
+bool Account::writeImportedSession() {
+	Expects(_owner->sessionExists());
+	Expects(!_writesStopped);
+
+	const auto expectedAuthorization = _owner->serializeMtpAuthorization();
+	const auto expectedConfig = _owner->mtp().config().serialize();
+	auto expectedSettings = QByteArray();
+	auto expectedMap = QByteArray();
+	writeSessionSettings(nullptr, &expectedSettings);
+	writeMtpConfig();
+	writeMtpData();
+	_mapChanged = true;
+	writeMap(&expectedMap);
+	Local::sync();
+
+	auto auth = FileReadDescriptor();
+	if (!ReadEncryptedFile(auth, ToFilePart(_dataNameKey), BaseGlobalPath(), _localKey, false)) {
+		return false;
+	}
+	auto type = quint32();
+	auto authorization = QByteArray();
+	auth.stream >> type >> authorization;
+	if (auth.stream.status() != QDataStream::Ok || !auth.stream.atEnd()
+		|| type != dbiMtpAuthorization || authorization != expectedAuthorization) {
+		return false;
+	}
+	auto config = FileReadDescriptor();
+	if (!ReadEncryptedFile(config, u"config"_q, _basePath, _localKey, false)) {
+		return false;
+	}
+	auto serializedConfig = QByteArray();
+	config.stream >> serializedConfig;
+	if (config.stream.status() != QDataStream::Ok || !config.stream.atEnd()
+		|| serializedConfig != expectedConfig) {
+		return false;
+	}
+	auto settings = FileReadDescriptor();
+	if (!ReadEncryptedFile(settings, _settingsKey, _basePath, _localKey, false)
+		|| settings.buffer.readAll() != expectedSettings) {
+		return false;
+	}
+	auto mapFile = FileReadDescriptor();
+	if (!ReadFile(mapFile, u"map"_q, _basePath, false)) {
+		return false;
+	}
+	auto salt = QByteArray();
+	auto legacyKey = QByteArray();
+	auto encryptedMap = QByteArray();
+	mapFile.stream >> salt >> legacyKey >> encryptedMap;
+	auto map = EncryptedDescriptor();
+	return mapFile.stream.status() == QDataStream::Ok
+		&& mapFile.stream.atEnd()
+		&& DecryptLocal(map, encryptedMap, _localKey)
+		&& map.buffer.readAll() == expectedMap;
+}
+
+void Account::writeSessionSettings(
+		Main::SessionSettings *stored,
+		QByteArray *written) {
+	if (_writesStopped) {
+		return;
+	}
 	if (_readingUserSettings) {
 		LOG(("App Error: attempt to write settings while reading them!"));
 		return;
@@ -1114,6 +1311,9 @@ void Account::writeSessionSettings(Main::SessionSettings *stored) {
 	data.stream << quint32(dbiRecentStickers) << recentStickers;
 
 	FileWriteDescriptor file(_settingsKey, _basePath);
+	if (written) {
+		*written = data.data.mid(sizeof(uint32));
+	}
 	file.writeEncrypted(data, _localKey);
 }
 
@@ -1200,6 +1400,9 @@ std::unique_ptr<Main::SessionSettings> Account::applyReadContext(
 }
 
 void Account::writeMtpData() {
+	if (_writesStopped) {
+		return;
+	}
 	Expects(_localKey != nullptr);
 
 	const auto serialized = _owner->serializeMtpAuthorization();
@@ -1240,6 +1443,9 @@ void Account::readMtpData() {
 }
 
 void Account::writeMtpConfig() {
+	if (_writesStopped) {
+		return;
+	}
 	Expects(_localKey != nullptr);
 
 	const auto serialized = _owner->mtp().config().serialize();
@@ -3240,6 +3446,9 @@ void Account::readMediaLastPlaybackPositions() {
 }
 
 void Account::writeSearchSuggestionsDelayed() {
+	if (_writesStopped) {
+		return;
+	}
 	Expects(_owner->sessionExists());
 
 	if (!_writeSearchSuggestionsTimer.isActive()) {
@@ -3247,14 +3456,22 @@ void Account::writeSearchSuggestionsDelayed() {
 	}
 }
 
-void Account::writeSearchSuggestionsIfNeeded() {
+bool Account::writeSearchSuggestionsIfNeeded(bool sync) {
+	if (sync) {
+		_writeSearchSuggestionsTimer.cancel();
+		return writeSearchSuggestions(true);
+	}
 	if (_writeSearchSuggestionsTimer.isActive()) {
 		_writeSearchSuggestionsTimer.cancel();
-		writeSearchSuggestions();
+		return writeSearchSuggestions(sync);
 	}
+	return !_writesStopped;
 }
 
-void Account::writeSearchSuggestions() {
+bool Account::writeSearchSuggestions(bool sync) {
+	if (_writesStopped) {
+		return false;
+	}
 	Expects(_owner->sessionExists());
 
 	const auto top = _owner->session().topPeers().serialize();
@@ -3275,7 +3492,7 @@ void Account::writeSearchSuggestions() {
 			_searchSuggestionsKey = 0;
 			writeMapDelayed();
 		}
-		return;
+		return true;
 	}
 	if (!_searchSuggestionsKey) {
 		_searchSuggestionsKey = GenerateKey(_basePath);
@@ -3294,8 +3511,13 @@ void Account::writeSearchSuggestions() {
 		<< guestChatBots
 		<< moneyRecipients;
 
-	FileWriteDescriptor file(_searchSuggestionsKey, _basePath);
+	FileWriteDescriptor file(_searchSuggestionsKey, _basePath, sync);
 	file.writeEncrypted(data, _localKey);
+	if (!file.finish()) {
+		_writeSearchSuggestionsTimer.callOnce(kWriteSearchSuggestionsDelay);
+		return false;
+	}
+	return true;
 }
 
 void Account::readSearchSuggestions() {
@@ -3932,14 +4154,17 @@ std::optional<QByteArray> Account::readPrefGeneric(std::string_view key) {
 }
 
 void Account::writePrefsDelayed() {
+	if (_writesStopped) {
+		return;
+	}
 	_prefsChanged = true;
 	_writePrefsTimer.callOnce(kDelayedWriteTimeout);
 }
 
-void Account::writePrefs() {
+bool Account::writePrefs(bool sync) {
 	_writePrefsTimer.cancel();
-	if (!_prefsChanged) {
-		return;
+	if (_writesStopped || (!sync && !_prefsChanged)) {
+		return !_writesStopped;
 	}
 	_prefsChanged = false;
 
@@ -3967,9 +4192,14 @@ void Account::writePrefs() {
 			data.stream.writeRawData(value.constData(), value.size());
 		}
 
-		FileWriteDescriptor file(_prefsKey, _basePath);
+		FileWriteDescriptor file(_prefsKey, _basePath, sync);
 		file.writeEncrypted(data, _localKey);
+		if (!file.finish()) {
+			_prefsChanged = true;
+			return false;
+		}
 	}
+	return true;
 }
 
 void Account::readPrefs() {

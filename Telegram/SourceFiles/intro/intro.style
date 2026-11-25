@@ -113,6 +113,8 @@ introPhone: InputField(introCountry) {
 	width: 225px;
 }
 introQrLoginLinkTop: 368px;
+introTdataImportTop: 416px;
+introTdataBoxMaxHeight: 360px;
 introName: introCountry;
 introPassword: introCountry;
 introPasswordTop: 74px;

@@ -1512,6 +1512,8 @@ PRIVATE
     intro/intro_start.h
     intro/intro_step.cpp
     intro/intro_step.h
+    intro/intro_tdata_import.cpp
+    intro/intro_tdata_import.h
     intro/intro_widget.cpp
     intro/intro_widget.h
     iv/iv_cached_media.cpp
@@ -2736,7 +2738,11 @@ elseif (APPLE)
     target_link_frameworks_weak(Telegram PRIVATE UserNotifications)
 
     set(icons_path ${CMAKE_CURRENT_SOURCE_DIR}/Telegram/Images.xcassets)
-    if (CMAKE_GENERATOR STREQUAL Xcode)
+    if (NOT build_macstore)
+        set(kukagram_icon ${res_loc}/kukagram/Icon.icns)
+        set_source_files_properties(${kukagram_icon} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+        target_add_resource(Telegram ${kukagram_icon})
+    elseif (CMAKE_GENERATOR STREQUAL Xcode)
         target_add_resource(Telegram ${icons_path})
     else()
         set(icon_path ${icons_path}/Icon.iconset)
@@ -2840,12 +2846,12 @@ if (build_macstore)
         COMMAND rm -rf $<TARGET_FILE_DIR:Telegram>/../Frameworks/Breakpad.framework/Resources/crash_report_sender.app
         COMMAND rm -rf $<TARGET_FILE_DIR:Telegram>/../Frameworks/Breakpad.framework/Resources/Inspector
     )
+elseif (APPLE)
+    set(bundle_identifier "io.kukagram.desktop")
+    set(bundle_entitlements "Telegram.entitlements")
+    set(output_name "kukagram")
 else()
-    if (CMAKE_GENERATOR STREQUAL Xcode)
-        set(bundle_identifier "com.tdesktop.Telegram$<$<CONFIG:Debug>:Debug>")
-    else()
-        set(bundle_identifier "com.tdesktop.Telegram")
-    endif()
+    set(bundle_identifier "com.tdesktop.Telegram")
     set(bundle_entitlements "Telegram.entitlements")
     set(output_name "Telegram")
 endif()

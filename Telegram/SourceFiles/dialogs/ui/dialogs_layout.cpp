@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/options.h"
 #include "base/unixtime.h"
+#include "core/kukagram_appearance.h"
 #include "core/ui_integration.h"
 #include "data/data_channel.h"
 #include "data/data_drafts.h"
@@ -36,6 +37,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "storage/localstorage.h"
 #include "support/support_helper.h"
+#include "ui/color_contrast.h"
+#include "ui/effects/animation_value.h"
 #include "ui/empty_userpic.h"
 #include "ui/painter.h"
 #include "ui/rect.h"
@@ -157,6 +160,131 @@ int PaintRightButtonImpl(QPainter &p, const PaintContext &context) {
 	return 0;
 }
 
+[[nodiscard]] bool PaintStudioRowSurface(
+		Painter &p,
+		const QRect &geometry,
+		const PaintContext &context,
+		const QBrush &nativeBackground) {
+	if ((!context.active && !context.selected)
+		|| context.quickActionContext
+		|| context.topicsExpanded > 0.
+		|| !Core::KukagramAppearance::Current().studio
+		|| nativeBackground.style() != Qt::SolidPattern) {
+		return false;
+	}
+	const auto inset = style::ConvertScale(4);
+	const auto card = QRectF(geometry).adjusted(inset, 2, -inset, -2);
+	if (card.isEmpty()) {
+		return false;
+	}
+	const auto native = nativeBackground.color();
+	const auto colors = context.active
+		? std::array{
+			st::dialogsNameFgActive->c,
+			st::dialogsTextFgActive->c,
+			st::dialogsTextFgServiceActive->c,
+			st::dialogsDateFgActive->c,
+		}
+		: std::array{
+			st::dialogsNameFgOver->c,
+			st::dialogsTextFgOver->c,
+			st::dialogsTextFgServiceOver->c,
+			st::dialogsDateFgOver->c,
+		};
+	const auto lightText = ::Ui::CountPerceivedBrightness(colors[0])
+		> ::Ui::CountPerceivedBrightness(native);
+	const auto safeColor = [&](const QColor &target, float64 tint) {
+		const auto candidate = anim::color(native, target, tint);
+		const auto readable = ranges::all_of(colors, [&](const QColor &fg) {
+			return ::Ui::CountContrast(fg, candidate)
+				>= std::min(4.5, ::Ui::CountContrast(fg, native));
+		});
+		return readable ? candidate : native;
+	};
+	const auto violet = lightText
+		? QColor(85, 49, 163)
+		: QColor(218, 202, 255);
+	const auto graphite = lightText
+		? QColor(40, 32, 62)
+		: QColor(247, 243, 255);
+	const auto leading = safeColor(violet, context.active ? 1. : 0.20);
+	const auto trailing = safeColor(graphite, context.active ? 1. : 0.10);
+	auto fill = QLinearGradient(
+		rtl() ? card.topRight() : card.topLeft(),
+		rtl() ? card.bottomLeft() : card.bottomRight());
+	fill.setColorAt(0., leading);
+	fill.setColorAt(1., trailing);
+
+	p.fillRect(geometry, context.currentBg);
+	p.save();
+	const auto radius = style::ConvertScale(12);
+	auto border = lightText
+		? QColor(175, 145, 255)
+		: QColor(119, 80, 212);
+	border.setAlpha(context.active ? 135 : 75);
+	{
+		auto hq = PainterHighQualityEnabler(p);
+		p.setPen(QPen(border, 1.));
+		p.setBrush(fill);
+		p.drawRoundedRect(card.adjusted(.5, .5, -.5, -.5), radius, radius);
+		if (context.active) {
+			const auto railHeight = std::min(qreal(20), card.height() / 2.);
+			const auto rail = QRectF(
+				rtl() ? card.right() - 3. : card.left(),
+				card.center().y() - railHeight / 2.,
+				3.,
+				railHeight);
+			p.setPen(Qt::NoPen);
+			p.setBrush(lightText
+				? QColor(128, 245, 216)
+				: QColor(24, 123, 102));
+			p.drawRoundedRect(rail, 1.5, 1.5);
+		}
+	}
+	p.restore();
+	return true;
+}
+
+[[nodiscard]] QColor StudioUnreadColor(const PaintContext &context) {
+	const auto background = context.active
+		? st::dialogsBgActive
+		: context.selected
+		? st::dialogsBgOver
+		: context.currentBg;
+	return ::Ui::CountPerceivedBrightness(background->color()) < 0.55
+		? QColor(128, 245, 216)
+		: QColor(24, 123, 102);
+}
+
+[[nodiscard]] QRect PaintStudioUnreadBadge(
+		QPainter &p,
+		const QString &text,
+		int right,
+		int top,
+		const UnreadBadgeStyle &st,
+		const QColor &fill) {
+	const auto size = CountUnreadBadgeSize(text, st);
+	const auto badge = QRect(QPoint(right - size.width(), top), size);
+	p.save();
+	{
+		auto hq = PainterHighQualityEnabler(p);
+		p.setPen(Qt::NoPen);
+		p.setBrush(fill);
+		p.drawRoundedRect(QRectF(badge), size.height() / 2., size.height() / 2.);
+		p.setFont(st.font);
+		p.setPen(::Ui::IsLightBackground(fill)
+			? QColor(19, 42, 38)
+			: Qt::white);
+		p.drawText(
+			badge.x() + (size.width() - st.font->width(text)) / 2,
+			badge.y() + (size.height() - st.font->height) / 2
+				+ st.font->ascent,
+			text);
+	}
+	p.restore();
+	return badge;
+}
+
 int PaintBadges(
 		QPainter &p,
 		const PaintContext &context,
@@ -194,6 +322,9 @@ int PaintBadges(
 	};
 	auto initial = right;
 	auto painted = 0;
+	const auto studioUnread = badgesState.unread
+		&& !badgesState.unreadMuted
+		&& Core::KukagramAppearance::Current().studio;
 	if (badgesState.unread
 		&& !badgesState.unreadCounter
 		&& context.st->unreadMarkDiameter > 0) {
@@ -206,17 +337,21 @@ int PaintBadges(
 			d,
 			d);
 		p.setPen(Qt::NoPen);
-		p.setBrush(badgesState.unreadMuted
-			? (context.active
-				? st::dialogsUnreadBgMutedActive
-				: context.selected
-				? st::dialogsUnreadBgMutedOver
-				: st::dialogsUnreadBgMuted)
-			: (context.active
-				? st::dialogsUnreadBgActive
-				: context.selected
-				? st::dialogsUnreadBgOver
-				: st::dialogsUnreadBg));
+		if (studioUnread) {
+			p.setBrush(StudioUnreadColor(context));
+		} else {
+			p.setBrush(badgesState.unreadMuted
+				? (context.active
+					? st::dialogsUnreadBgMutedActive
+					: context.selected
+					? st::dialogsUnreadBgMutedOver
+					: st::dialogsUnreadBgMuted)
+				: (context.active
+					? st::dialogsUnreadBgActive
+					: context.selected
+					? st::dialogsUnreadBgOver
+					: st::dialogsUnreadBg));
+		}
 		p.drawEllipse(rect);
 		right -= st.size + st.padding;
 		++painted;
@@ -229,7 +364,10 @@ int PaintBadges(
 			badgesState.unreadCounter,
 			badgesState.mention || badgesState.reaction || badgesState.poll,
 			narrow);
-		const auto badge = PaintUnreadBadge(p, counter, right, top, st);
+		const auto badge = studioUnread
+			? PaintStudioUnreadBadge(
+				p, counter, right, top, st, StudioUnreadColor(context))
+			: PaintUnreadBadge(p, counter, right, top, st);
 		right -= badge.width() + st.padding;
 		++painted;
 	} else if (const auto used = PaintRightButton(p, context)) {
@@ -484,7 +622,9 @@ void PaintRow(
 	if (swipeTranslation) {
 		p.translate(swipeMirrored ? swipeTranslation : -swipeTranslation, 0);
 	}
-	p.fillRect(geometry, bg);
+	if (!PaintStudioRowSurface(p, geometry, context, bg)) {
+		p.fillRect(geometry, bg);
+	}
 	if (!(flags & Flag::TopicJumpRipple)) {
 		auto ripple = context.active
 			? st::dialogsRippleBgActive

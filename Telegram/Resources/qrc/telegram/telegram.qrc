@@ -1,5 +1,8 @@
 <RCC>
   <qresource prefix="/gui">
+    <file alias="art/kukagram.png">../../kukagram/Logo.png</file>
+    <file alias="art/kukagram-moon-map.jpg">../../kukagram/MoonMap.jpg</file>
+    <file alias="art/kukagram-moon-credits.txt">../../kukagram/MoonMap-NASA.txt</file>
     <file alias="art/background.tgv">../../art/background.tgv</file>
     <file alias="art/bg_thumbnail.png">../../art/bg_thumbnail.png</file>
     <file alias="art/bg_initial.jpg">../../art/bg_initial.jpg</file>

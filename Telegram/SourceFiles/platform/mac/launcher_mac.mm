@@ -33,6 +33,70 @@ bool Launcher::launchUpdater(UpdaterLaunch action) {
 	}
 	@autoreleasepool {
 
+#ifdef TDESKTOP_DISABLE_AUTOUPDATE
+	if (action == UpdaterLaunch::JustRelaunch) {
+		@try {
+			const auto bundle = [[NSBundle mainBundle] bundlePath];
+			if (!bundle.length) {
+				LOG(("Could not get the app path for relaunch."));
+				return false;
+			}
+			// Arguments are passed as argv, never interpolated into shell code.
+			// The helper outlives this process and waits for its complete exit.
+			const auto script = @"pid=$1; app=$2; shift 2; attempts=0; "
+				"while /bin/kill -0 "$pid" 2>/dev/null; do "
+				"if [ "$attempts" -ge 600 ]; then exit 75; fi; "
+				"/bin/sleep 0.1; attempts=$((attempts + 1)); done; "
+				"exec /usr/bin/open -n -a "$app" --args "$@"";
+			const auto arguments = [NSMutableArray arrayWithObjects:
+				@"-c",
+				script,
+				@"kukagram-relaunch",
+				[NSString stringWithFormat:@"%d",
+					[[NSProcessInfo processInfo] processIdentifier]],
+				bundle,
+				@"-noupdate",
+				@"-workdir",
+				Q2NSString(cWorkingDir()),
+				nil];
+			if (cRestartingToSettings()) [arguments addObject:@"-tosettings"];
+			if (cLaunchMode() == LaunchModeAutoStart) {
+				[arguments addObject:@"-autostart"];
+			}
+			if (Logs::DebugEnabled()) [arguments addObject:@"-debug"];
+			if (cStartInTray()) [arguments addObject:@"-startintray"];
+			if (cDataFile() != u"data"_q) {
+				[arguments addObject:@"-key"];
+				[arguments addObject:Q2NSString(cDataFile())];
+			}
+			if (!cStartUrls().isEmpty()) {
+				[arguments addObject:@"--"];
+				for (const auto &url : cStartUrls()) {
+					[arguments addObject:Q2NSString(url.toString(QUrl::FullyEncoded))];
+				}
+			}
+			const auto helper = [[NSTask alloc] init];
+			[helper setExecutableURL:[NSURL fileURLWithPath:@"/bin/sh"]];
+			[helper setArguments:arguments];
+			[helper setStandardInput:[NSFileHandle fileHandleWithNullDevice]];
+			[helper setStandardOutput:[NSFileHandle fileHandleWithNullDevice]];
+			[helper setStandardError:[NSFileHandle fileHandleWithNullDevice]];
+			NSError *error = nil;
+			if (![helper launchAndReturnError:&error]) {
+				LOG(("Could not start the relaunch helper: %1").arg(
+					error ? NS2QString([error localizedDescription]) : QString()));
+				return false;
+			}
+			Logs::closeMain();
+			CrashReports::Finish();
+			return true;
+		} @catch (NSException *exception) {
+			LOG(("Could not start the relaunch helper."));
+			return false;
+		}
+	}
+#endif // TDESKTOP_DISABLE_AUTOUPDATE
+
 #ifdef OS_MAC_STORE
 	// In AppStore version we don't have Updater.
 	// We just relaunch our app.

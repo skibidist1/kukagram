@@ -2544,6 +2544,10 @@ AttachWebView::~AttachWebView() {
 	_session->api().request(_popularAppBotsRequestId).cancel();
 }
 
+bool AttachWebView::hasOpenInstances() const {
+	return !_instances.empty() || !_closing.empty();
+}
+
 void AttachWebView::openByUsername(
 		not_null<Window::SessionController*> controller,
 		const Api::SendAction &action,

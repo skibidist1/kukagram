@@ -188,32 +188,65 @@ auto PersonalChannelController::chosen() const
 	return _chosen.events();
 }
 
-Window::SessionController *ApplyAccountIndex(
+struct AppliedAccountIndex {
+	Window::SessionController *controller = nullptr;
+	bool deferred = false;
+};
+
+[[nodiscard]] QString AccountReplayUrl(const QString &query) {
+	// Keep opaque start/startapp payloads byte-for-byte while removing the
+	// positional selector: the committed slot identifies the next process.
+	auto remaining = QStringList();
+	for (const auto &part : query.split('&')) {
+		const auto equals = part.indexOf('=');
+		const auto key = (equals >= 0) ? part.left(equals) : part;
+		if (key.compare(u"acc"_q, Qt::CaseInsensitive) != 0) {
+			remaining.push_back(part);
+		}
+	}
+	return u"tg://resolve?"_q + remaining.join('&');
+}
+
+[[nodiscard]] AppliedAccountIndex ApplyAccountIndex(
 		not_null<Window::SessionController*> controller,
-		int accountIndex) {
+		int accountIndex,
+		const QString &replayUrl) {
 	if (accountIndex <= 0) {
-		return nullptr;
+		return {};
 	}
-	const auto list = Core::App().domain().orderedAccounts();
+	auto &domain = Core::App().domain();
+	const auto list = domain.storedAccounts();
 	if (accountIndex > int(list.size())) {
-		return nullptr;
+		return {};
 	}
-	const auto account = list[accountIndex - 1];
-	if (account == &controller->session().account()) {
-		return controller;
+	const auto &stored = list[accountIndex - 1];
+	const auto &live = domain.accounts();
+	const auto found = ranges::find(live, stored.index,
+		&Main::Domain::AccountWithIndex::index);
+	if (found == end(live)) {
+		if (!stored.uniqueId && stored.name.isEmpty()) {
+			return {};
+		}
+		domain.activateStored(stored.index, replayUrl);
+		return { .deferred = true };
+	}
+	const auto account = not_null(found->account.get());
+	if (!account->sessionExists()) {
+		return {};
+	} else if (account == &controller->session().account()) {
+		return { .controller = controller };
 	} else if (const auto window = Core::App().windowFor({ account })) {
 		if (&window->account() != account) {
-			Core::App().domain().maybeActivate(account);
+			domain.maybeActivate(account);
 			if (&window->account() != account) {
-				return nullptr;
+				return {};
 			}
 		}
-		const auto session = window->sessionController();
-		if (session) {
-			return session;
+		if (const auto session = window->sessionController()) {
+			return { .controller = session };
 		}
 	}
-	return nullptr;
+	return {};
 }
 
 void SavePersonalChannel(
@@ -677,9 +710,12 @@ bool ResolveUsernameOrPhone(
 	if (params.contains(u"acc"_q)) {
 		const auto switched = ApplyAccountIndex(
 			controller,
-			params.value(u"acc"_q).toInt());
-		if (switched) {
-			controller = switched;
+			params.value(u"acc"_q).toInt(),
+			AccountReplayUrl(match->captured(1)));
+		if (switched.deferred) {
+			return true;
+		} else if (switched.controller) {
+			controller = switched.controller;
 		} else {
 			controller->showToast(u"Could not activate account %1."_q.arg(
 				params.value(u"acc"_q)));

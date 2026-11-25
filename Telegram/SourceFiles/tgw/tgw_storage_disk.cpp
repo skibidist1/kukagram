@@ -175,7 +175,7 @@ std::optional<StorageDisk::Area> StorageDisk::read(FullMsgId key) {
 	if (i->second.height.height <= 0.) {
 		_entries.erase(i);
 	}
-	ScheduleRemoveFiles(std::move(paths));
+	ScheduleRemoveFiles(std::move(paths), _folder);
 	writeIndex();
 	LOG(("Tgw dropped a widget storage record over the quota."));
 	return std::nullopt;
@@ -290,7 +290,7 @@ bool StorageDisk::remove(Fn<bool(FullMsgId, const StorageMeta &)> matches) {
 	if (_entries.size() == was) {
 		return false;
 	}
-	ScheduleRemoveFiles(std::move(paths));
+	ScheduleRemoveFiles(std::move(paths), _folder);
 	writeIndex();
 	return true;
 }

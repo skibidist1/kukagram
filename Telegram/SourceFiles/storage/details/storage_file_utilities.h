@@ -132,7 +132,9 @@ bool ReadEncryptedFile(
 	const QString &basePath,
 	const MTP::AuthKeyPtr &key);
 
-void ScheduleRemoveFiles(std::vector<QString> paths);
+void ScheduleRemoveFiles(
+	std::vector<QString> paths,
+	const QString &replacedIndexFolder = {});
 void ScheduleRemoveFolder(const QString &path);
 
 void Sync();

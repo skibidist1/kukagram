@@ -17,7 +17,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "styles/style_window.h"
+#include "styles/style_menu_icons.h"
+#include "ui/dynamic_image.h"
 #include "ui/dynamic_thumbnails.h"
+
+#ifdef Q_OS_MAC
+#include <QtGui/QIcon>
+#include <QtGui/QPixmap>
+#endif
 
 namespace Core::TrayAccountsMenu {
 
@@ -43,18 +50,60 @@ void Fill(Platform::Tray &tray) {
 	if (Core::App().passcodeLocked()) {
 		return;
 	}
-	auto accounts = std::vector<not_null<Main::Account*>>();
-	for (const auto &account : Core::App().domain().orderedAccounts()) {
-		if (account->sessionExists()) {
-			accounts.push_back(account);
-		}
-	}
-	if (accounts.size() <= 1) {
+	const auto accounts = Core::App().domain().storedAccounts();
+	const auto visible = ranges::count_if(accounts, [](const auto &stored) {
+		return stored.uniqueId || !stored.name.isEmpty();
+	});
+	if (visible <= 1) {
 		return;
 	}
 	tray.addSeparator();
 	constexpr auto kMaxLength = 30;
-	for (const auto account : accounts) {
+#ifdef Q_OS_MAC
+	auto placeholder = QIcon();
+#endif
+	for (const auto &stored : accounts) {
+		if (!stored.uniqueId && stored.name.isEmpty()) {
+			continue;
+		}
+		const auto &live = Core::App().domain().accounts();
+		const auto found = ranges::find(live, stored.index,
+			&Main::Domain::AccountWithIndex::index);
+		const auto account = (found != end(live))
+			? found->account.get()
+			: nullptr;
+		if (!account || !account->sessionExists()) {
+			const auto &name = stored.name.isEmpty() ? stored.phone : stored.name;
+			auto title = rpl::single((name.size() > kMaxLength)
+				? (name.mid(0, kMaxLength) + Ui::kQEllipsis)
+				: name);
+			const auto activate = [index = stored.index, id = stored.uniqueId] {
+				const auto &app = Core::App();
+				if (app.passcodeLocked()) {
+					return;
+				}
+				auto &domain = app.domain();
+				const auto accounts = domain.storedAccounts();
+				const auto entry = ranges::find(
+					accounts, index, &Main::Domain::StoredAccount::index);
+				if (entry != end(accounts) && entry->uniqueId == id) {
+					domain.activateStored(index, {}, -1, base::IsCtrlPressed());
+				}
+			};
+#ifdef Q_OS_MAC
+			if (placeholder.isNull()) {
+				const auto icon = Ui::MakeIconThumbnail(st::menuIconProfile);
+				placeholder = QIcon(QPixmap::fromImage(
+					icon->image(st::notifyMacPhotoSize)));
+			}
+			tray.addAction(std::move(title), activate, placeholder);
+#else
+			tray.addAction(std::move(title), activate,
+				Ui::MakeIconThumbnail(st::menuIconProfile),
+				st::notifyMacPhotoSize);
+#endif
+			continue;
+		}
 		const auto user = account->session().user();
 		const auto weak = base::make_weak(account);
 		tray.addAction(
@@ -67,7 +116,8 @@ void Fill(Platform::Tray &tray) {
 			}),
 			[weak] {
 				const auto strong = weak.get();
-				if (!strong || !strong->sessionExists()) {
+				if (Core::App().passcodeLocked()
+					|| !strong || !strong->sessionExists()) {
 					return;
 				}
 				if (base::IsCtrlPressed()) {

@@ -18,10 +18,6 @@ public:
 
 	explicit EmojiImageLoader(crl::weak_on_queue<EmojiImageLoader> weak);
 
-	void init(
-		std::shared_ptr<UniversalImages> images,
-		bool largeEnabled);
-
 	[[nodiscard]] QImage prepare(EmojiPtr emoji) const;
 	[[nodiscard]] QImage prepareWithoutOutline(EmojiPtr emoji) const;
 	void switchTo(std::shared_ptr<UniversalImages> images);
@@ -30,6 +26,7 @@ public:
 private:
 	crl::weak_on_queue<EmojiImageLoader> _weak;
 	std::shared_ptr<UniversalImages> _images;
+	mutable UniversalImages::SpriteCache _sprites;
 
 };
 

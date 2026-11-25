@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/components/passkeys.h"
 #include "data/data_passkey_deserialize.h"
 #include "intro/intro_phone.h"
+#include "intro/intro_tdata_import.h"
 #include "intro/intro_widget.h"
 #include "intro/intro_password_check.h"
 #include "lang/lang_keys.h"
@@ -369,6 +370,14 @@ void QrWidget::setupControls() {
 	}, _skip->lifetime());
 
 	_skip->setClickedCallback([=] { submit(); });
+	const auto import = Ui::CreateChild<Ui::LinkButton>(
+		this, u"Импорт tdata"_q);
+	import->show();
+	sizeValue() | rpl::on_next([=](QSize) {
+		import->moveToLeft(
+			st::introTdataImportLeft, st::introTdataImportTop);
+	}, import->lifetime());
+	import->setClickedCallback([=] { ShowTdataImport(this, &account()); });
 }
 
 void QrWidget::setupPasskeyLink() {
@@ -575,7 +584,7 @@ QImage TelegramLogoImage() {
 		p.setBrush(QrActiveColor());
 		p.setPen(Qt::NoPen);
 		p.drawEllipse(QRect(QPoint(), size));
-		st::introQrPlane.paintInCenter(p, QRect(QPoint(), size));
+		p.drawPixmap(QRect(QPoint(), size), QPixmap(u":/gui/art/kukagram.png"_q));
 	}
 	return result;
 }

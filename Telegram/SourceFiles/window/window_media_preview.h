@@ -64,6 +64,7 @@ private:
 	void startShow();
 	void fillEmojiString();
 	void resetGifAndCache();
+	void invalidatePreviewImage();
 	[[nodiscard]] QPoint innerPosition(QSize size) const;
 	[[nodiscard]] QPoint outerPosition(QSize size) const;
 	[[nodiscard]] QRect updateArea() const;

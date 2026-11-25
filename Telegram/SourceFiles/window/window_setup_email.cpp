@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "base/call_delayed.h"
 #include "base/event_filter.h"
+#include "base/weak_ptr.h"
 #include "core/application.h"
 #include "data/components/promo_suggestions.h"
 #include "data/data_session.h"
@@ -25,7 +26,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/ui_utility.h"
 #include "ui/vertical_list.h"
-#include "ui/controls/userpic_button.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/labels.h"
@@ -38,6 +38,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_boxes.h"
 #include "styles/style_info.h"
 #include "styles/style_intro.h"
+#include "styles/style_menu_icons.h"
 #include "styles/style_layers.h"
 #include "styles/style_settings.h"
 #include "styles/style_window.h"
@@ -629,32 +630,67 @@ void SetupEmailLockWidget::showAccountsMenu() {
 	const auto &st = st::popupMenuWithIcons;
 
 	_accountsMenu = base::make_unique_q<Ui::PopupMenu>(this, st);
-	const auto accounts = session->domain().orderedAccounts();
+	const auto accounts = session->domain().storedAccounts();
 
-	for (const auto &account : accounts) {
-		if (!account->sessionExists()) {
+	for (const auto &stored : accounts) {
+		if ((!stored.uniqueId && stored.name.isEmpty())
+			|| stored.uniqueId == session->uniqueId()) {
+			continue;
+		}
+		const auto &live = session->domain().accounts();
+		const auto found = ranges::find(live, stored.index,
+			&Main::Domain::AccountWithIndex::index);
+		const auto account = (found != end(live))
+			? found->account.get()
+			: nullptr;
+		const auto activate = [
+				weak = base::make_weak(account),
+				index = stored.index,
+				id = stored.uniqueId] {
+			auto &domain = Core::App().domain();
+			if (const auto current = weak.get()) {
+				const auto session = current->maybeSession();
+				if (session && session->uniqueId() == id) {
+					domain.maybeActivate(current);
+					return;
+				}
+			}
+			const auto saved = domain.storedAccounts();
+			const auto match = ranges::find(saved, index,
+				&Main::Domain::StoredAccount::index);
+			if (match != end(saved) && match->uniqueId == id) {
+				domain.activateStored(index);
+			}
+		};
+		if (!account || !account->sessionExists()) {
+			const auto name = stored.name.isEmpty()
+				? stored.phone
+				: stored.name;
+			_accountsMenu->addAction(name, activate, &st::menuIconProfile);
 			continue;
 		}
 		const auto user = account->session().user();
-		if (user == session->user()) {
-			continue;
-		}
 		const auto action = new QAction(user->name(), _accountsMenu);
-		QObject::connect(action, &QAction::triggered, [=] {
-			Core::App().domain().maybeActivate(account);
-		});
+		QObject::connect(action, &QAction::triggered, activate);
 		auto owned = base::make_unique_q<Ui::Menu::Action>(
 			_accountsMenu->menu(),
 			_accountsMenu->menu()->st(),
 			action,
 			nullptr,
 			nullptr);
-		const auto userpic = Ui::CreateChild<Ui::UserpicButton>(
-			owned.get(),
-			user,
-			st::lockSetupEmailUserpicSmall);
+		const auto &userpicSt = st::lockSetupEmailUserpicSmall;
+		const auto userpic = Ui::CreateChild<Ui::RpWidget>(owned.get());
+		const auto ratio = style::DevicePixelRatio();
+		auto view = user->activeUserpicView();
+		auto image = PeerData::GenerateUserpicImage(
+			user, view, userpicSt.photoSize * ratio);
+		image.setDevicePixelRatio(ratio);
+		userpic->resize(userpicSt.size);
 		userpic->move(st.menu.itemIconPosition);
 		userpic->setAttribute(Qt::WA_TransparentForMouseEvents);
+		userpic->paintRequest() | rpl::on_next([=] {
+			QPainter(userpic).drawImage(QPoint(), image);
+		}, userpic->lifetime());
 		_accountsMenu->addAction(std::move(owned));
 	}
 

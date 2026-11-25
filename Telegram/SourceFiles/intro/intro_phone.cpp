@@ -11,12 +11,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "intro/intro_code.h"
 #include "intro/intro_email.h"
 #include "intro/intro_qr.h"
+#include "intro/intro_tdata_import.h"
 #include "styles/style_intro.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
 #include "ui/wrap/fade_wrap.h"
 #include "ui/widgets/fields/special_fields.h"
 #include "main/main_account.h"
+#include "mtproto/mtproto_dc_options.h"
 #include "main/main_domain.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
@@ -97,6 +99,14 @@ PhoneWidget::PhoneWidget(
 	}, lifetime());
 	setErrorCentered(true);
 	setupQrLogin();
+	const auto import = Ui::CreateChild<Ui::LinkButton>(
+		this, u"Импорт tdata"_q);
+	import->show();
+	sizeValue() | rpl::on_next([=](QSize) {
+		import->moveToLeft(
+			st::introTdataImportLeft, st::introTdataImportTop);
+	}, import->lifetime());
+	import->setClickedCallback([=] { ShowTdataImport(this, &this->account()); });
 
 	if (!_country->chooseCountry(getData()->country)) {
 		_country->chooseCountry(u"US"_q);
@@ -182,18 +192,19 @@ void PhoneWidget::submit() {
 
 	cancelNearestDcRequest();
 
-	// Check if such account is authorized already.
 	const auto phoneDigits = DigitsOnly(phone);
-	for (const auto &[index, existing] : Core::App().domain().accounts()) {
-		const auto raw = existing.get();
-		if (const auto session = raw->maybeSession()) {
-			if (raw->mtp().environment() == account().mtp().environment()
-				&& DigitsOnly(session->user()->phone()) == phoneDigits) {
-				crl::on_main(raw, [=] {
-					Core::App().domain().activate(raw);
-				});
-				return;
-			}
+	auto &domain = Core::App().domain();
+	const auto current = ranges::find_if(domain.accounts(), [&](const Main::Domain::AccountWithIndex &entry) {
+		return entry.account.get() == &account();
+	});
+	Assert(current != end(domain.accounts()));
+	const auto test = account().mtp().environment() == MTP::Environment::Test;
+	for (const auto &stored : domain.storedAccounts()) {
+		const auto storedTest = (stored.uniqueId & 0x0100'0000'0000'0000ULL) != 0;
+		if (stored.index != current->index && stored.uniqueId
+			&& storedTest == test && DigitsOnly(stored.phone) == phoneDigits) {
+			domain.activateStored(stored.index, {}, current->index);
+			return;
 		}
 	}
 

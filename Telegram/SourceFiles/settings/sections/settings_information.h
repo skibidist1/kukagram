@@ -9,6 +9,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "settings/settings_type.h"
 
+#include <QtCore/QSet>
+#include <optional>
+
 class UserData;
 
 namespace Ui {
@@ -34,9 +37,12 @@ struct AccountsEvents {
 	rpl::producer<> closeRequests;
 	QPointer<Ui::RpWidget> addAccountButton;
 };
+using AccountsFilter = std::optional<QSet<quint64>>;
+
 AccountsEvents SetupAccounts(
 	not_null<Ui::VerticalLayout*> container,
-	not_null<Window::SessionController*> controller);
+	not_null<Window::SessionController*> controller,
+	rpl::producer<AccountsFilter> filter = rpl::single(AccountsFilter()));
 
 void UpdatePhotoLocally(not_null<UserData*> user, const QImage &image);
 

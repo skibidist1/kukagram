@@ -434,6 +434,7 @@ public:
 
 	void close(not_null<WebViewInstance*> instance);
 	void closeAll();
+	[[nodiscard]] bool hasOpenInstances() const;
 
 	void loadPopularAppBots();
 	[[nodiscard]] auto popularAppBots() const
