@@ -30,8 +30,7 @@ PeerData *readPeer(
 	QDataStream &stream);
 QString peekUserPhone(int streamAppVersion, QDataStream &stream);
 
-// Reads the identity part of a serialized user without a session, so
-// a stored account can be listed before it is started.
+// Lets a stored account be listed before its session is started.
 struct UserIdentity {
 	PeerId id = 0;
 	QString firstName;

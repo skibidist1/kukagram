@@ -1,0 +1,414 @@
+diff --git a/ui/emoji_config.cpp b/ui/emoji_config.cpp
+index 8df59bb..d38dd58 100644
+--- a/ui/emoji_config.cpp
++++ b/ui/emoji_config.cpp
+@@ -6,6 +6,7 @@
+ //
+ #include "emoji_config.h"
+ 
++#include "ui/emoji_source_cache.h"
+ #include "ui/widgets/fields/input_field.h"
+ #include "emoji_suggestions_helper.h"
+ #include "base/bytes.h"
+@@ -25,6 +26,8 @@
+ 
+ #include <crl/crl_async.h>
+ 
++#include <mutex>
++
+ namespace Ui {
+ namespace Emoji {
+ namespace {
+@@ -81,6 +84,7 @@ auto SpritesCount = -1;
+ auto InstanceNormal = std::unique_ptr<Instance>();
+ auto InstanceLarge = std::unique_ptr<Instance>();
+ auto Universal = std::shared_ptr<UniversalImages>();
++std::mutex UniversalSpritesMutex;
+ auto CanClearUniversal = false;
+ auto WaitingToSwitchBackToId = 0;
+ auto Updates = rpl::event_stream<>();
+@@ -88,7 +92,6 @@ auto Updates = rpl::event_stream<>();
+ #ifdef Q_OS_MAC
+ auto TouchbarSize = -1;
+ auto TouchbarInstance = std::unique_ptr<Instance>();
+-auto TouchbarEmoji = (Instance*)nullptr;
+ #endif
+ 
+ auto MainEmojiMap = std::map<int, QPixmap>();
+@@ -318,24 +321,18 @@ QImage LoadFromFile(int id, int size, int index) {
+ 	return result;
+ }
+ 
+-std::vector<QImage> LoadSprites(int id) {
+-	Expects(IsValidSetId(id));
+-	Expects(SpritesCount > 0);
+-
+-	auto result = std::vector<QImage>();
++[[nodiscard]] QImage LoadSprite(int id, int index) {
+ 	const auto folder = (id != 0)
+ 		? internal::SetDataPath(id) + '/'
+ 		: QStringLiteral(":/gui/emoji/");
+-	const auto base = folder + "emoji_";
+-	return ranges::views::ints(
+-		0,
+-		SpritesCount
+-	) | ranges::views::transform([&](int index) {
+-		return base + QString::number(index + 1) + ".webp";
+-	}) | ranges::views::transform([](const QString &path) {
+-		return QImage(path, "WEBP").convertToFormat(
+-			QImage::Format_ARGB32_Premultiplied);
+-	}) | ranges::to_vector;
++	const auto path = folder + "emoji_" + QString::number(index + 1) + ".webp";
++	auto image = QImage(path, "WEBP");
++	const auto expected = QSize(
++		kImagesPerRow * kUniversalSize,
++		RowsCount(index) * kUniversalSize);
++	return (image.size() == expected)
++		? std::move(image).convertToFormat(QImage::Format_ARGB32_Premultiplied)
++		: QImage();
+ }
+ 
+ std::vector<QImage> LoadAndValidateSprites(int id) {
+@@ -346,25 +343,62 @@ std::vector<QImage> LoadAndValidateSprites(int id) {
+ 	if (config != ConfigResult::Good) {
+ 		return {};
+ 	}
+-	auto result = LoadSprites(id);
+-	const auto sizes = ranges::views::ints(
+-		0,
+-		SpritesCount
+-	) | ranges::views::transform([](int index) {
+-		return QSize(
+-			kImagesPerRow * kUniversalSize,
+-			RowsCount(index) * kUniversalSize);
+-	});
+-	const auto good = ranges::views::zip_with(
+-		[](const QImage &data, QSize size) { return data.size() == size; },
+-		result,
+-		sizes);
+-	if (ranges::find(good, false) != end(good)) {
+-		return {};
++	auto result = std::vector<QImage>();
++	result.reserve(SpritesCount);
++	for (auto i = 0; i != SpritesCount; ++i) {
++		auto image = LoadSprite(id, i);
++		if (image.isNull()) {
++			return {};
++		}
++		result.push_back(std::move(image));
+ 	}
+ 	return result;
+ }
+ 
++[[nodiscard]] QImage UniversalSprite(
++		const std::vector<QImage> &sprites,
++		int id,
++		int index) {
++	Expects(index >= 0 && index < SpritesCount);
++	{
++		const auto lock = std::lock_guard(UniversalSpritesMutex);
++		if (!sprites.empty()) {
++			return sprites[index];
++		}
++	}
++	// A cache eviction can follow ensureLoaded() before the painter reads it.
++	// Read only the needed sprite and let the caller own its pixels.
++	return (ValidateConfig(id) == ConfigResult::Good)
++		? LoadSprite(id, index)
++		: QImage();
++}
++
++[[nodiscard]] QImage RenderSourceSprite(
++		const QImage &sprite,
++		EmojiPtr emoji,
++		int size) {
++	if (sprite.isNull()) {
++		return {};
++	}
++	const auto large = kUniversalSize;
++	const auto row = emoji->row();
++	const auto column = emoji->column();
++	const auto single = QImage(
++		sprite.constBits() + (row * kImagesPerRow * large + column) * large * 4,
++		large,
++		large,
++		sprite.bytesPerLine(),
++		sprite.format());
++	// scaled() can share the atlas pixels when the requested size is equal.
++	return (size == large)
++		? single.copy()
++		: single.scaled(
++			size,
++			size,
++			Qt::IgnoreAspectRatio,
++			Qt::SmoothTransformation);
++}
++
+ [[nodiscard]] bool UniversalInUse() {
+ #ifdef Q_OS_MAC
+ 	// WHY: UniversalImages::generate() reads Universal sprites
+@@ -414,6 +448,7 @@ int UniversalImages::id() const {
+ 
+ bool UniversalImages::ensureLoaded() {
+ 	Expects(SpritesCount > 0);
++	const auto lock = std::lock_guard(UniversalSpritesMutex);
+ 
+ 	if (!_sprites.empty()) {
+ 		return true;
+@@ -423,6 +458,7 @@ bool UniversalImages::ensureLoaded() {
+ }
+ 
+ void UniversalImages::clear() {
++	const auto lock = std::lock_guard(UniversalSpritesMutex);
+ 	_sprites.clear();
+ }
+ 
+@@ -432,37 +468,48 @@ void UniversalImages::draw(
+ 		int size,
+ 		int x,
+ 		int y) const {
+-	Expects(emoji->sprite() < _sprites.size());
++	auto single = RenderSourceSprite(
++		UniversalSprite(_sprites, _id, emoji->sprite()),
++		emoji,
++		size);
++	if (!single.isNull()) {
++		single.setDevicePixelRatio(p.device()->devicePixelRatio());
++		p.drawImage(x, y, single);
++	}
++}
+ 
+-	const auto large = kUniversalSize;
+-	const auto &original = _sprites[emoji->sprite()];
+-	const auto data = original.bits();
+-	const auto stride = original.bytesPerLine();
+-	const auto format = original.format();
+-	const auto row = emoji->row();
+-	const auto column = emoji->column();
+-	auto single = QImage(
+-		data + (row * kImagesPerRow * large + column) * large * 4,
+-		large,
+-		large,
+-		stride,
+-		format
+-	).scaled(
+-		size,
+-		size,
+-		Qt::IgnoreAspectRatio,
+-		Qt::SmoothTransformation);
+-	single.setDevicePixelRatio(p.device()->devicePixelRatio());
+-	p.drawImage(x, y, single);
++QImage SourceSpriteCache::render(int id, EmojiPtr emoji, int size) {
++	if (_id != id) {
++		_entries = {};
++		_id = id;
++	}
++	const auto index = emoji->sprite();
++	if (_entries[1].index == index) {
++		std::swap(_entries[0], _entries[1]);
++	}
++	if (_entries[0].index != index) {
++		if (ValidateConfig(id) != ConfigResult::Good) {
++			return {};
++		}
++		auto image = LoadSprite(id, index);
++		if (image.isNull()) {
++			return {};
++		}
++		_entries[1] = std::move(_entries[0]);
++		_entries[0] = { std::move(image), index };
++	}
++	return RenderSourceSprite(_entries[0].pixels, emoji, size);
+ }
+ 
+ QImage UniversalImages::generate(int size, int index) const {
+ 	Expects(size > 0);
+-	Expects(index < _sprites.size());
+ 
+ 	const auto rows = RowsCount(index);
+ 	const auto large = kUniversalSize;
+-	const auto &original = _sprites[index];
++	const auto original = UniversalSprite(_sprites, _id, index);
++	if (original.isNull()) {
++		return {};
++	}
+ 	const auto data = original.bits();
+ 	const auto stride = original.bytesPerLine();
+ 	const auto format = original.format();
+@@ -516,14 +563,10 @@ void Init() {
+ 	InstanceLarge = std::make_unique<Instance>(SizeLarge);
+ 
+ #ifdef Q_OS_MAC
+-	if (style::Scale() != kScaleForTouchBar) {
+-		TouchbarSize = int(style::ConvertScale(18 * 4 / 3.,
++	TouchbarSize = (style::Scale() == kScaleForTouchBar)
++		? SizeLarge
++		: int(style::ConvertScale(18 * 4 / 3.,
+ 			kScaleForTouchBar * style::DevicePixelRatio()));
+-		TouchbarInstance = std::make_unique<Instance>(TouchbarSize);
+-		TouchbarEmoji = TouchbarInstance.get();
+-	} else {
+-		TouchbarEmoji = InstanceLarge.get();
+-	}
+ #endif
+ }
+ 
+@@ -535,7 +578,6 @@ void Clear() {
+ 	InstanceLarge = nullptr;
+ #ifdef Q_OS_MAC
+ 	TouchbarInstance = nullptr;
+-	TouchbarEmoji = nullptr;
+ #endif
+ }
+ 
+@@ -548,9 +590,16 @@ void ClearIrrelevantCache() {
+ 		const auto list = QDir(folder).entryList(QDir::Files);
+ 		const auto good1 = CacheFileNameMask(SizeNormal);
+ 		const auto good2 = CacheFileNameMask(SizeLarge);
++#ifdef Q_OS_MAC
++		const auto goodTouchbar = CacheFileNameMask(TouchbarSize);
++#endif // Q_OS_MAC
+ 		const auto good3full = CurrentSettingPath();
+ 		for (const auto &name : list) {
+-			if (!name.startsWith(good1) && !name.startsWith(good2)) {
++			if (!name.startsWith(good1) && !name.startsWith(good2)
++#ifdef Q_OS_MAC
++				&& !name.startsWith(goodTouchbar)
++#endif // Q_OS_MAC
++				) {
+ 				const auto full = folder + '/' + name;
+ 				if (full != good3full) {
+ 					QFile(full).remove();
+@@ -639,9 +688,7 @@ int GetSizeLarge() {
+ 
+ #ifdef Q_OS_MAC
+ int GetSizeTouchbar() {
+-	return (style::Scale() == kScaleForTouchBar)
+-		? GetSizeLarge()
+-		: TouchbarSize;
++	return TouchbarSize;
+ }
+ #endif
+ 
+@@ -796,19 +843,17 @@ const QPixmap &SinglePixmap(EmojiPtr emoji, int fontHeight) {
+ }
+ 
+ void Draw(QPainter &p, EmojiPtr emoji, int size, int x, int y) {
+-#ifdef Q_OS_MAC
+-	const auto s = (style::Scale() == kScaleForTouchBar)
+-		? SizeLarge
+-		: TouchbarSize;
+-	if (size == s) {
+-		TouchbarEmoji->draw(p, emoji, x, y);
+-		return;
+-	}
+-#endif
+ 	if (size == SizeNormal) {
+ 		InstanceNormal->draw(p, emoji, x, y);
+ 	} else if (size == SizeLarge) {
+ 		InstanceLarge->draw(p, emoji, x, y);
++#ifdef Q_OS_MAC
++	} else if (size == TouchbarSize) {
++		if (!TouchbarInstance) {
++			TouchbarInstance = std::make_unique<Instance>(TouchbarSize);
++		}
++		TouchbarInstance->draw(p, emoji, x, y);
++#endif // Q_OS_MAC
+ 	} else {
+ 		Unexpected("Size in Ui::Emoji::Draw.");
+ 	}
+@@ -886,7 +931,7 @@ void Instance::generateCache() {
+ 	checkUniversalImages();
+ 
+ 	const auto cachePath = internal::CacheFileFolder();
+-	if (cachePath.isEmpty()) {
++	if (_unsupported || cachePath.isEmpty()) {
+ 		return;
+ 	}
+ 	const auto size = _size;
+@@ -901,7 +946,7 @@ void Instance::generateCache() {
+ 			=,
+ 			image = std::move(image)
+ 		]() mutable {
+-			if (universal != Universal) {
++			if (universal != Universal || image.isNull()) {
+ 				return;
+ 			}
+ 			pushSprite(std::move(image));
+diff --git a/ui/emoji_config.h b/ui/emoji_config.h
+index 487d8b2..20a4b2e 100644
+--- a/ui/emoji_config.h
++++ b/ui/emoji_config.h
+@@ -16,6 +16,8 @@
+ 
+ #include <rpl/producer.h>
+ 
++#include <array>
++
+ namespace Ui {
+ namespace Emoji {
+ namespace internal {
+@@ -159,6 +161,16 @@ void Draw(QPainter &p, EmojiPtr emoji, int size, int x, int y);
+ 
+ class UniversalImages {
+ public:
++	// One cache per image loader, accessed only on its rendering queue.
++	class SpriteCache {
++		friend class UniversalImages;
++		struct Entry {
++			QImage pixels;
++			int index = -1;
++		};
++		std::array<Entry, 2> _entries;
++	};
++
+ 	explicit UniversalImages(int id);
+ 
+ 	int id() const;
+@@ -167,6 +179,11 @@ public:
+ 
+ 	void draw(QPainter &p, EmojiPtr emoji, int size, int x, int y) const;
+ 
++	[[nodiscard]] QImage render(
++		EmojiPtr emoji,
++		int size,
++		SpriteCache *cache = nullptr) const;
++
+ 	// This method must be thread safe and so it is called after
+ 	// the _id value is fixed and all _sprites are loaded.
+ 	QImage generate(int size, int index) const;
+diff --git a/ui/emoji_source_cache.h b/ui/emoji_source_cache.h
+new file mode 100644
+index 0000000..f4725c0
+--- /dev/null
++++ b/ui/emoji_source_cache.h
+@@ -0,0 +1,29 @@
++// This file is part of Desktop App Toolkit,
++// a set of libraries for developing nice desktop applications.
++//
++// For license and copyright information please follow this link:
++// https://github.com/desktop-app/legal/blob/master/LEGAL
++//
++#pragma once
++
++#include "ui/emoji_config.h"
++
++#include <array>
++
++namespace Ui::Emoji {
++
++// Used only on the background emoji image loader's queue.
++class SourceSpriteCache final {
++public:
++	[[nodiscard]] QImage render(int id, EmojiPtr emoji, int size);
++
++private:
++	struct Entry {
++		QImage pixels;
++		int index = -1;
++	};
++	std::array<Entry, 2> _entries;
++	int _id = -1;
++};
++
++} // namespace Ui::Emoji

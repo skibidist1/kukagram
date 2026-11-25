@@ -762,6 +762,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_shortcuts_chat_self" = "Saved Messages";
 "lng_shortcuts_chat_pinned_n" = "Pinned chat #{index}";
 "lng_shortcuts_show_account_n" = "Account #{index}";
+"lng_kukagram_account_read_failed" = "Could not read this saved account. Its files were kept unchanged.";
+"lng_kukagram_account_switch_failed" = "Could not save the selected account. Please check free disk space and try again.";
 "lng_shortcuts_show_all_chats" = "All Chats folder";
 "lng_shortcuts_show_folder_n" = "Folder #{index}";
 "lng_shortcuts_show_folder_last" = "Last folder";
