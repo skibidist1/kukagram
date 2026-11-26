@@ -11,6 +11,7 @@ Local account groups for kukagram.
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "settings.h"
+#include "ui/text/format_values.h"
 #include "window/window_controller.h"
 
 #include <QtCore/QSignalBlocker>
@@ -378,7 +379,7 @@ private:
 					label += u"  ·  @"_q + i->second;
 				}
 				if (!account.phone.isEmpty()) {
-					label += u"  ·  "_q + account.phone;
+					label += u"  ·  "_q + Ui::FormatPhone(account.phone);
 				}
 				if (id == currentId) {
 					label += u"  ·  текущий"_q;
@@ -405,10 +406,7 @@ private:
 		for (auto i = 0; i != _accounts->count(); ++i) {
 			const auto item = _accounts->item(i);
 			const auto checked = item->checkState() == Qt::Checked;
-			const auto matches = std::all_of(_terms.begin(), _terms.end(),
-				[&](const QString &term) {
-					return item->text().contains(term, Qt::CaseInsensitive);
-				});
+			const auto matches = LabelMatches(item->text(), _search->text());
 			const auto show = (!membersOnly || checked) && matches;
 			item->setHidden(!show);
 			members += checked;

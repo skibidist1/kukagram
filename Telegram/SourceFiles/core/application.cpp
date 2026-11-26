@@ -6,8 +6,10 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/application.h"
+#include "core/kukagram_account_groups.h"
 #include "core/kukagram_appearance.h"
 #include "ui/chat/studio_paint.h"
+#include "ui/text/format_values.h"
 
 #include "data/data_abstract_structure.h"
 #include "data/data_channel.h"
@@ -407,7 +409,7 @@ void ShowKukagramNotificationAccountsDialog(not_null<Main::Domain*> domain) {
 			: account.name;
 		const auto label = account.phone.isEmpty()
 			? name
-			: name + u"  ·  "_q + account.phone;
+			: name + u"  ·  "_q + Ui::FormatPhone(account.phone);
 		auto item = new QListWidgetItem(label, list);
 		item->setData(Qt::UserRole, QVariant::fromValue(qulonglong(account.uniqueId)));
 		item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
@@ -423,8 +425,9 @@ void ShowKukagramNotificationAccountsDialog(not_null<Main::Domain*> domain) {
 		[=](const QString &query) {
 			for (auto i = 0; i != list->count(); ++i) {
 				const auto item = list->item(i);
-				item->setHidden(!item->text().contains(
-					query, Qt::CaseInsensitive));
+				item->setHidden(!KukagramAccountGroups::LabelMatches(
+					item->text(),
+					query));
 			}
 		});
 	auto buttonsRow = new QHBoxLayout();

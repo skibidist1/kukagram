@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QSaveFile>
 #include <QtCore/QSet>
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -53,6 +54,47 @@ struct ReadResult final {
 		}
 	}
 	return normalized;
+}
+
+[[nodiscard]] inline QString DigitsOnly(const QString &text) {
+	auto result = QString();
+	for (const auto character : text) {
+		if (character.isDigit()) {
+			result += character;
+		}
+	}
+	return result;
+}
+
+// A phone typed as "+1 681" must match the stored digits "1681...".
+[[nodiscard]] inline bool LabelMatches(
+		const QString &label,
+		const QString &query) {
+	const auto simplified = query.simplified();
+	if (simplified.isEmpty()) {
+		return true;
+	}
+	const auto phoneLike = std::all_of(
+		simplified.begin(),
+		simplified.end(),
+		[](QChar character) {
+			return character.isDigit()
+				|| character == QChar('+')
+				|| character == QChar(' ')
+				|| character == QChar('-')
+				|| character == QChar('(')
+				|| character == QChar(')');
+		});
+	const auto digits = DigitsOnly(simplified);
+	if (phoneLike
+		&& !digits.isEmpty()
+		&& DigitsOnly(label).contains(digits)) {
+		return true;
+	}
+	const auto terms = simplified.split(QChar(' '), Qt::SkipEmptyParts);
+	return std::all_of(terms.begin(), terms.end(), [&](const QString &term) {
+		return label.contains(term, Qt::CaseInsensitive);
+	});
 }
 
 namespace details {
