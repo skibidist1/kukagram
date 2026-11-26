@@ -3,6 +3,26 @@
 Read `README-KUKAGRAM.md` first (working rules). This note is the current
 state and the next steps.
 
+## Private API build (2026-11-26, Claude)
+
+- The user filled `~/Developer/kukagram-build/api-private.cmake` (outside Git,
+  mode 600). Its format was checked without printing the values. `out-release`
+  was reconfigured with `-C` that file and `TDESKTOP_API_TEST=OFF`.
+- The build finished without errors and was rebuilt incrementally at `fd8d9f6`.
+  `ninja -n` then reported nothing left to build. Packaged and signed:
+  `~/Developer/kukagram-build/packages.noindex/kukagram-release.6ScR73h2/`.
+  `codesign --verify --deep --strict` passed.
+- On a fresh portable profile the window shows one merged title bar. With
+  `-debug`, `help.getConfig` returned a config (`this_dc: 2`) and no RPC
+  error, so the server accepts the private API keys. Debug logs contain
+  the api_id, so the test profile was deleted afterwards.
+- Not tested yet: login, switching between real accounts, the new
+  hotkey/search features in a logged-in profile. The installed app is still
+  the old DEBUG build. Replacing it needs the user's go-ahead and a backup.
+- Codex's `b175df3` (search, labels, username peek) and `fd8d9f6` (reserved
+  macOS shortcuts) were reviewed and no problems were found. The username
+  peek matches the write order in `serialize_peer.cpp`.
+
 ## Resume here: audit paused for handoff
 
 The user asked to check Kukagram for bugs, then explicitly paused the work
