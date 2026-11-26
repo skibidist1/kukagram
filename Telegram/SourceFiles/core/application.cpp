@@ -185,28 +185,6 @@ const auto kKukagramShortcutKeys = {
 		|| event->nativeModifiers();
 }
 
-[[nodiscard]] bool ReservedKukagramShortcut(const KukagramShortcut &binding) {
-	const auto matchesKey = [&](int key, quint32 physical) {
-		return binding.key == key
-			|| (HasKukagramPhysicalKey(binding)
-				&& binding.physicalKey == physical);
-	};
-	const auto command = Qt::KeyboardModifiers(Qt::ControlModifier);
-	if (binding.modifiers == command) {
-		return matchesKey(Qt::Key_Q, 0x0C)
-			|| matchesKey(Qt::Key_W, 0x0D)
-			|| matchesKey(Qt::Key_H, 0x04)
-			|| matchesKey(Qt::Key_M, 0x2E);
-	} else if (binding.modifiers == (command | Qt::ShiftModifier)) {
-		return matchesKey(Qt::Key_W, 0x0D);
-	} else if (binding.modifiers == (command | Qt::AltModifier)) {
-		return matchesKey(Qt::Key_H, 0x04);
-	} else if (binding.modifiers == (command | Qt::MetaModifier)) {
-		return matchesKey(Qt::Key_F, 0x03);
-	}
-	return false;
-}
-
 [[nodiscard]] bool ValidKukagramShortcut(const KukagramShortcut &binding) {
 	const auto key = binding.key;
 	const auto mods = binding.modifiers;
@@ -218,8 +196,7 @@ const auto kKukagramShortcutKeys = {
 		&& key != Qt::Key_Alt && key != Qt::Key_Shift
 		&& !(mods & ~allowed)
 		&& ((mods & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
-			|| (key >= Qt::Key_F1 && key <= Qt::Key_F12))
-		&& !ReservedKukagramShortcut(binding);
+			|| (key >= Qt::Key_F1 && key <= Qt::Key_F12));
 }
 
 [[nodiscard]] QString KukagramShortcutFile() {
@@ -381,11 +358,6 @@ protected:
 				).toString(QKeySequence::NativeText),
 			.physicalKeyKnown = HasKukagramNativeKeyData(event),
 		};
-		if (ReservedKukagramShortcut(binding)) {
-			setText(u"Занято macOS — выбери другое сочетание"_q);
-			event->accept();
-			return;
-		}
 		*_binding = binding;
 		_recording = false;
 		setText(ShortcutLabel(*_binding));
@@ -511,7 +483,8 @@ void ShowKukagramNotificationAccountsDialog(not_null<Main::Domain*> domain) {
 		u"Нажми кнопку сочетания, затем новые клавиши. "
 		u"На Mac запоминается физическая клавиша: русская и английская "
 		u"раскладки работают одинаково. "
-		u"Системные сочетания macOS назначить нельзя. "
+		u"Можно назначить любое сочетание, даже занятое macOS (например ⌘W): "
+		u"в Kukagram оно будет переключать аккаунты. "
 		u"Чтобы получать фоновые уведомления от отмеченных аккаунтов, "
 		u"открой каждый из них один раз после запуска приложения."_q,
 		dialog);

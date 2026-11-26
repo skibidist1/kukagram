@@ -3,6 +3,16 @@
 Read `README-KUKAGRAM.md` first (working rules). This note is the current
 state and the next steps.
 
+## Hotkeys: user's choice wins (2026-11-26, Claude)
+
+- The user binds ⌘W (next account) and ⌘E (previous) on purpose and
+  relies on them. Codex's reserved-shortcut block from `fd8d9f6` silently
+  replaced ⌘W with the default, so the user lost their switching keys.
+  The block was removed at the user's request: any combination can be
+  bound again, including macOS ones. Do not re-add such a restriction.
+- Rebuilt, packaged (`kukagram-release.pb3XGUYh`) and reinstalled into
+  `/Applications`; the saved `keyboard-shortcuts.ini` was never modified.
+
 ## Private API build (2026-11-26, Claude)
 
 - The user filled `~/Developer/kukagram-build/api-private.cmake` (outside Git,
