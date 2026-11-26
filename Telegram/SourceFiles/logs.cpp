@@ -362,7 +362,8 @@ void start() {
 	}
 
 	LogsData = new LogsDataFields();
-	if (cWorkingDir().isEmpty()) {
+	if (cWorkingDir().isEmpty()
+		&& !(Platform::IsMac() && launcher.customWorkingDir())) {
 #if defined Q_OS_MAC || (!defined Q_OS_WIN && !defined _DEBUG) || defined Q_OS_WINRT || defined OS_WIN_STORE
 		cForceWorkingDir(psAppDataPath());
 #else // (!Q_OS_WIN && !_DEBUG) || Q_OS_WINRT || OS_WIN_STORE || OS_MAC_STORE
