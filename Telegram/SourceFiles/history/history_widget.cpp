@@ -280,7 +280,8 @@ struct HistoryWidget::EmptyMoon {
 
 namespace {
 
-constexpr auto kLiveMoonFrame = crl::time(80);
+constexpr auto kLiveMoonFrame = crl::time(200);
+constexpr auto kLiveMoonIdleCheck = crl::time(1000);
 constexpr auto kLiveMoonDegreesPerSecond = 6.;
 constexpr auto kLiveStars = 30;
 
@@ -9524,6 +9525,11 @@ void HistoryWidget::animateEmptyMoon() {
 		|| !Core::KukagramAppearance::MoonVisible()
 		|| !Core::KukagramAppearance::Current().liveBackground
 		|| !isVisible()) {
+		return;
+	}
+	if (!window()->isActiveWindow()) {
+		_emptyMoon->liveTick = 0;
+		_emptyMoon->live.callOnce(kLiveMoonIdleCheck);
 		return;
 	}
 	const auto now = crl::now();

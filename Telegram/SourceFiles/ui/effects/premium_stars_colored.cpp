@@ -27,6 +27,7 @@ constexpr auto kLifetimeMax = 3 * kLifetimeMin;
 constexpr auto kSizeMin = 0.1;
 constexpr auto kSizeMax = 0.15;
 constexpr auto kPauseOnNoPaints = 4;
+constexpr auto kSparkleFrame = crl::time(100);
 
 [[nodiscard]] crl::time ChooseLife(base::BufferedRandom<uint32> &random) {
 	return kLifetimeMin
@@ -72,6 +73,7 @@ private:
 	Ui::Animations::Basic _animation;
 	QImage _frame;
 	int _skippedPaints = 0;
+	crl::time _lastUpdate = 0;
 	int _size = 0;
 
 };
@@ -89,9 +91,13 @@ CollectibleEmoji::CollectibleEmoji(
 , _edgeColor(edgeColor)
 , _inner(std::move(inner))
 , _animation([=] {
-	if (++_skippedPaints > kPauseOnNoPaints) {
+	const auto now = crl::now();
+	if (now - _lastUpdate < kSparkleFrame) {
+		return;
+	} else if (++_skippedPaints > kPauseOnNoPaints) {
 		_animation.stop();
 	} else {
+		_lastUpdate = now;
 		update();
 	}
 })

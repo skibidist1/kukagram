@@ -3,6 +3,7 @@
 #include "base/algorithm.h"
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QDateTime>
 #include <QtCore/QFile>
 #include <QtCore/QTimer>
 #include <QtGui/QImage>
@@ -42,7 +43,7 @@ public:
 		if (bounds.isEmpty() || !available()) {
 			return;
 		}
-		constexpr auto kMaxFramePixels = 640.;
+		constexpr auto kMaxFramePixels = 280.;
 		const auto diameter = std::min(bounds.width(), bounds.height());
 		const auto pixels = qRound(std::clamp(
 			diameter * painter.device()->devicePixelRatioF(),
@@ -63,8 +64,27 @@ public:
 private:
 	struct TextureCache {
 		QImage image;
+		qint64 used = 0;
 		bool failed = false;
 	};
+
+	static constexpr auto kTextureReuseMs = 20'000;
+
+	static void ScheduleTextureRelease() {
+		QTimer::singleShot(
+			kTextureReuseMs,
+			Qt::VeryCoarseTimer,
+			QCoreApplication::instance(),
+			[] {
+				auto &cache = CachedTexture();
+				const auto idle = QDateTime::currentMSecsSinceEpoch() - cache.used;
+				if (idle >= kTextureReuseMs) {
+					cache.image = QImage();
+				} else if (!cache.image.isNull()) {
+					ScheduleTextureRelease();
+				}
+			});
+	}
 
 	[[nodiscard]] static QString TexturePath() {
 		return QStringLiteral(":/gui/art/kukagram-moon-map.jpg");
@@ -81,14 +101,10 @@ private:
 			cache.image = QImage(TexturePath()).convertToFormat(QImage::Format_RGB32);
 			cache.failed = cache.image.isNull();
 			if (!cache.failed) {
-				constexpr auto kTextureReuseMs = 20'000;
-				QTimer::singleShot(
-					kTextureReuseMs,
-					Qt::VeryCoarseTimer,
-					QCoreApplication::instance(),
-					[] { CachedTexture().image = QImage(); });
+				ScheduleTextureRelease();
 			}
 		}
+		cache.used = QDateTime::currentMSecsSinceEpoch();
 		return cache.image;
 	}
 

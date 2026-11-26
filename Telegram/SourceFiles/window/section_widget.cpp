@@ -50,7 +50,7 @@ namespace {
 
 constexpr auto kReactionRestrictionToastDuration = 5 * crl::time(1000);
 
-void PaintStudioWallpaper(QPainter &p, QSize size, QRect clip) {
+void PaintStudioWallpaperFull(QPainter &p, QSize size, QRect clip) {
 	clip = clip.intersected(QRect(QPoint(), size));
 	if (clip.isEmpty()) {
 		return;
@@ -117,6 +117,26 @@ void PaintStudioWallpaper(QPainter &p, QSize size, QRect clip) {
 			2., 2.);
 	}
 	p.restore();
+}
+
+void PaintStudioWallpaper(QPainter &p, QSize size, QRect clip) {
+	clip = clip.intersected(QRect(QPoint(), size));
+	if (clip.isEmpty()) {
+		return;
+	}
+	static auto cache = QImage();
+	const auto ratio = style::DevicePixelRatio();
+	if (cache.size() != size * ratio) {
+		cache = QImage(size * ratio, QImage::Format_ARGB32_Premultiplied);
+		cache.setDevicePixelRatio(ratio);
+		cache.fill(Qt::transparent);
+		auto q = QPainter(&cache);
+		PaintStudioWallpaperFull(q, size, QRect(QPoint(), size));
+	}
+	p.drawImage(
+		clip,
+		cache,
+		QRect(clip.topLeft() * ratio, clip.size() * ratio));
 }
 
 [[nodiscard]] rpl::producer<QString> PeerThemeTokenValue(

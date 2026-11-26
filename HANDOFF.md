@@ -3,6 +3,23 @@
 Read `README-KUKAGRAM.md` first (working rules). This note is the current
 state and the next steps.
 
+## CPU usage (2026-11-27, Claude)
+
+Measured with `top` on the installed app and profiled with `sample`
+(symbolize with `nm -n` of the unstripped `out-release` binary).
+In front it used ~45% CPU, mostly from repainting the chat list at display
+refresh rate for animated collectible emoji statuses. Now it's ~14% in
+front and ~1–3% in the background.
+
+- `CollectibleEmoji` in `ui/effects/premium_stars_colored.cpp` (upstream
+  code) now requests repaints at most every 100 ms instead of every frame.
+- The Studio wallpaper is drawn once per size into a cached image.
+- The live Moon runs at 5 fps, only while the window is active, renders
+  at most 280 px, and keeps its texture while in use.
+- Remaining load in front is regular Telegram work: chat list updates,
+  animated emoji and the live Moon on the empty screen. Telegram's own power
+  saving settings or the «Живой фон» switch reduce it further.
+
 ## Design pack (2026-11-26, Claude)
 
 The user picked five design items. Each has its own switch in the
