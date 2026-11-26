@@ -44,10 +44,10 @@ bool Launcher::launchUpdater(UpdaterLaunch action) {
 			// Arguments are passed as argv, never interpolated into shell code.
 			// The helper outlives this process and waits for its complete exit.
 			const auto script = @"pid=$1; app=$2; shift 2; attempts=0; "
-				"while /bin/kill -0 "$pid" 2>/dev/null; do "
-				"if [ "$attempts" -ge 600 ]; then exit 75; fi; "
+				"while /bin/kill -0 \"$pid\" 2>/dev/null; do "
+				"if [ \"$attempts\" -ge 600 ]; then exit 75; fi; "
 				"/bin/sleep 0.1; attempts=$((attempts + 1)); done; "
-				"exec /usr/bin/open -n -a "$app" --args "$@"";
+				"exec /usr/bin/open -n -a \"$app\" --args \"$@\"";
 			const auto arguments = [NSMutableArray arrayWithObjects:
 				@"-c",
 				script,
