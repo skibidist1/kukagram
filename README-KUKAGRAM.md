@@ -30,6 +30,31 @@ Known gaps:
   hand-written lines (passcode wrap key derivation and account info decrypt)
   where the logged source was truncated.
 
+## Working rules (Claude and Codex)
+
+This project is worked on by both Claude and Codex. Every agent follows these
+rules.
+
+1. Work only in `~/Developer/kukagram`, the clone of this repository. Never
+   copy the project into `~/Documents`, `~/Desktop` or `~/Documents/Codex`:
+   those folders are synced with iCloud, which is how the original source was
+   lost.
+2. One agent at a time. Before starting, run `git status` and `git pull`; if
+   the tree has uncommitted changes you did not make, stop and ask the user.
+3. Finish every session with a commit and `git push` to `origin`, so the next
+   agent starts from the current state and every change can be reverted.
+4. Building and replacing `/Applications/kukagram.app` follows the checklist
+   below and is done by one agent per change, never in parallel.
+5. Do not take another agent's report on trust: check claims against the code
+   and, where possible, by building and running.
+
+Rules for the user, in Russian:
+
+- Открывай Codex и Claude только в папке `~/Developer/kukagram`.
+- Не запускай их одновременно на этом проекте: сначала один закончил, потом
+  другой начал.
+- В конце каждой сессии проси закоммитить и отправить изменения на GitHub.
+
 ## Not in this repository
 
 `api-private.cmake` (Telegram API id and hash), `tdata`, account sessions and

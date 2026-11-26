@@ -2,6 +2,14 @@
 
 This guide defines repository-wide instructions for coding agents working with the Telegram Desktop codebase.
 
+## Kukagram fork
+
+This checkout is Kukagram, the user's personal fork. Before any work, read
+`README-KUKAGRAM.md` and follow its working rules: work only in
+`~/Developer/kukagram`, one agent at a time, finish with a commit and
+`git push`, and never touch `tdata`, sessions or `api-private.cmake`. The
+Kukagram rules take precedence over the upstream task workflow below.
+
 ## AI Tasks
 
 In this repository "task" is a specific term. It always means one work record in
