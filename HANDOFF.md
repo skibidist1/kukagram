@@ -1,7 +1,55 @@
-# Kukagram handoff (2026-11-26, Claude → Codex)
+# Kukagram handoff (2026-11-26, Codex → Claude)
 
 Read `README-KUKAGRAM.md` first (working rules). This note is the current
 state and the next steps.
+
+## Resume here: audit paused for handoff
+
+The user asked to check Kukagram for bugs, then explicitly paused the work
+to continue with Claude. The audit is incomplete. No installed app was
+replaced, no personal profile was launched and no real account/session data
+was opened in this audit session.
+
+- The audit started at `b175df3`. The working tree was clean except for the
+  documented local `Telegram/lib_ui` patch; its reverse-apply check passed.
+  `git pull --ff-only` found no incoming changes.
+- One confirmed bug was fixed in `core/application.cpp`: account shortcuts
+  could intercept macOS Close/Quit/Hide/Minimize and full screen. The recorder
+  now rejects these combinations without replacing the previous binding.
+  Loading an old conflicting binding restores that action's default.
+  Physical key checks also cover the Russian keyboard layout.
+- A standalone Qt check compiled the actual shortcut implementation from
+  `application.cpp` and passed reserved-key rejection, Russian physical keys,
+  default bindings, old-setting fallback, rejected-save preservation,
+  recording again after rejection and normal key matching. Before the fix,
+  the same implementation accepted Command-W as an account shortcut.
+  Rerun: `python3 ../kukagram-build/checks.noindex/shortcuts/run.py`.
+  This uses temporary settings only. The helper is outside Git and requires
+  the toolchain mounted at `/Volumes/KG`.
+- Clang `-fsyntax-only` passed for the full changed `application.cpp` using
+  its real Release compilation flags. `git diff --check` passed. This is
+  not a completed full build or a live login test.
+- At the handoff check, the pre-existing Release builder was still running:
+  ninja PID `68275`, progress `1135/1204`, log
+  `~/Developer/kukagram-build/logs/release-api.log`, with no compiler errors
+  found in that log. Wait for that process before building again. Since
+  sources changed during its run, perform an incremental build against HEAD
+  afterwards; do not package stale outputs.
+- Never print full compiler process arguments, the compilation database or
+  private CMake values: they contain API credentials. Use process names,
+  PIDs and elapsed time for monitoring.
+
+Continue by finishing the Release build, checking any failures, rebuilding
+against the final HEAD, then packaging/signing and testing on a synthetic
+portable profile as described below. Do not claim all bugs have been ruled
+out. Test successful authorization/switching only with separately prepared
+test accounts; do not use the user's real accounts or `tdata`.
+
+The latest design discussion suggested a visible active-account label above
+the message field, favorites, switching between the last two accounts,
+local notes and a clearer background-activity screen. These are proposals;
+the user has not selected one for implementation.
+
 
 ## Account search and group menu
 
@@ -120,9 +168,9 @@ Problems already solved, keep these settings:
 ## Observed in the installed app (not fixed yet)
 
 - Installed build is DEBUG (unoptimized).
-- "Next account" is bound to ⌘W, which is macOS "close window"; the shortcut
-  dialog does not warn about system conflicts. Synthetic key presses did not
-  switch accounts; ask the user whether the shortcuts work for them.
+- "Next account" was bound to ⌘W in the installed version. The current source
+  rejects this conflict, but the fix has not been installed or tested with
+  real account switching.
 - Cancel/Save buttons are English in Russian dialogs; the menu footer says
   "Telegram Desktop"; the Moon toggle is only reachable by a right click on an
   empty chat; Kukagram menu items sit below the full account list.

@@ -13,8 +13,9 @@ sh kukagram-patches/apply-lib_ui.sh
 ```
 
 The submodules stay on the upstream revisions pinned by Telegram Desktop 7.4.1.
-Kukagram's only submodule change (emoji source cache in `Telegram/lib_ui`) is
-kept in `kukagram-patches/lib_ui.patch` and applied by the script above.
+Kukagram's submodule changes (emoji source cache and macOS title bar in
+`Telegram/lib_ui`) are kept in `kukagram-patches/lib_ui.patch` and applied
+by the script above.
 
 ## How this source was recovered
 
@@ -76,6 +77,9 @@ Rules for the user, in Russian:
 - Press ⌘⌥K or choose «Поиск аккаунта» in ☰. Search by name, local
   label, username or phone. Select a result and press Enter to switch.
 - Select «Изменить подпись» to save a local label for an account.
+- System shortcuts for closing, quitting, hiding, minimizing and full screen
+  cannot be assigned to account actions. Previously saved conflicting
+  bindings fall back to the defaults when loaded.
 - In «Группы аккаунтов», choose a group and click «Открыть в меню ☰».
   The menu shows the group name and its members. «Все аккаунты» restores
   the full list.
