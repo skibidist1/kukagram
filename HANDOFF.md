@@ -16,9 +16,12 @@ state and the next steps.
   `-debug`, `help.getConfig` returned a config (`this_dc: 2`) and no RPC
   error, so the server accepts the private API keys. Debug logs contain
   the api_id, so the test profile was deleted afterwards.
-- Not tested yet: login, switching between real accounts, the new
-  hotkey/search features in a logged-in profile. The installed app is still
-  the old DEBUG build. Replacing it needs the user's go-ahead and a backup.
+- With the user's go-ahead this build replaced `/Applications/kukagram.app`
+  at 22:27. Backups made first (verified identical, 35998 files):
+  `~/Developer/kukagram-backups/before-release-20261126-2227/` holds the old
+  DEBUG app and a copy of `~/Library/Application Support/kukagram`. To roll
+  back: quit Kukagram, restore both from there. The new app started and kept
+  running; the user checks their accounts themselves.
 - Codex's `b175df3` (search, labels, username peek) and `fd8d9f6` (reserved
   macOS shortcuts) were reviewed and no problems were found. The username
   peek matches the write order in `serialize_peer.cpp`.
