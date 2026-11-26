@@ -412,3 +412,29 @@ index 0000000..f4725c0
 +};
 +
 +} // namespace Ui::Emoji
+diff --git a/ui/platform/mac/ui_window_mac.mm b/ui/platform/mac/ui_window_mac.mm
+index d9f700e..3aa4eae 100644
+--- a/ui/platform/mac/ui_window_mac.mm
++++ b/ui/platform/mac/ui_window_mac.mm
+@@ -317,6 +317,11 @@ bool nativeEventFilter(
+ 		return;
+ 	}
+ 
++#if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
++	// Qt 6.12 rebuilds the style mask on every flag change and keeps
++	// the full size content view only while this hint is set.
++	_owner->window()->setWindowFlag(Qt::ExpandedClientAreaHint);
++#endif
+ #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+ 	_owner->window()->setWindowFlag(Qt::NoTitleBarBackgroundHint);
+ #endif
+@@ -370,6 +375,9 @@ bool nativeEventFilter(
+ 		if (freshWindow != savedWindow) {
+ 			_nativeView = freshView;
+ 			_nativeWindow = freshWindow;
++#if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
++			_owner->window()->setWindowFlag(Qt::ExpandedClientAreaHint);
++#endif
+ 			_owner->window()->setWindowFlag(Qt::NoTitleBarBackgroundHint);
+ 			[freshWindow setTitlebarAppearsTransparent:YES];
+ 			[freshWindow setTitleVisibility:NSWindowTitleHidden];

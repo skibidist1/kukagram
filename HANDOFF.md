@@ -30,6 +30,16 @@ state and the next steps.
 - The local `Telegram/lib_ui` checkout has the documented patch already
   applied as a local commit. The parent repo still pins the upstream revision.
 
+## Title bar fix (2026-11-26, Claude)
+
+- With Homebrew Qt 6.12 the Release build showed the native macOS title bar
+  as a separate strip above Kukagram's own title bar. Qt 6.9+ drops
+  `NSWindowStyleMaskFullSizeContentView` unless `Qt::ExpandedClientAreaHint`
+  is set. `ui_window_mac.mm` now sets that hint (in `kukagram-patches/lib_ui.patch`).
+- Rebuilt and repackaged:
+  `~/Developer/kukagram-build/packages.noindex/kukagram-release.FP6DUrBb/`.
+  On an isolated portable profile the window shows one merged title bar.
+
 ## State
 
 - Source: this repository, branch `kukagram`, pushed to

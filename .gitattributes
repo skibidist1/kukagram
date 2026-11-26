@@ -13,3 +13,4 @@ Telegram/Resources/zxcvbn/*.txt text eol=lf
 
 # Raw float tables, such as the 3D diamond model data
 *.bin binary
+kukagram-patches/*.patch -whitespace
