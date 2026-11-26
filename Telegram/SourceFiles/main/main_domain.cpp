@@ -322,6 +322,7 @@ std::vector<Domain::StoredAccount> Domain::storedAccounts() const {
 			current.uniqueId = session->uniqueId();
 			current.name = session->user()->name();
 			current.phone = session->user()->phone();
+			current.username = session->user()->username();
 		} else if (!ranges::contains(_pendingAccounts, index)) {
 			continue;
 		}
@@ -596,6 +597,7 @@ void Domain::retireInactiveAccounts(crl::time retryDelay) {
 			.uniqueId = session->uniqueId(),
 			.name = session->user()->name(),
 			.phone = session->user()->phone(),
+			.username = session->user()->username(),
 			.authorizationKnown = true,
 		});
 		candidates.push_back(index);
@@ -953,6 +955,7 @@ void Domain::watchSession(not_null<Account*> account) {
 			.uniqueId = session->uniqueId(),
 			.name = session->user()->name(),
 			.phone = session->user()->phone(),
+			.username = session->user()->username(),
 			.authorizationKnown = true,
 		});
 

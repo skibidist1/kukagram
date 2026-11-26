@@ -71,6 +71,15 @@ Rules for the user, in Russian:
   другой начал.
 - В конце каждой сессии проси закоммитить и отправить изменения на GitHub.
 
+## Account search and groups
+
+- Press ⌘⌥K or choose «Поиск аккаунта» in ☰. Search by name, local
+  label, username or phone. Select a result and press Enter to switch.
+- Select «Изменить подпись» to save a local label for an account.
+- In «Группы аккаунтов», choose a group and click «Открыть в меню ☰».
+  The menu shows the group name and its members. «Все аккаунты» restores
+  the full list.
+
 ## Not in this repository
 
 `api-private.cmake` (Telegram API id and hash), `tdata`, account sessions and

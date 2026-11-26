@@ -44,6 +44,7 @@ struct StoredAccount {
 	uint64 uniqueId = 0;
 	QString name;
 	QString phone;
+	QString username;
 	bool authorizationKnown = false;
 };
 

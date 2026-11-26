@@ -7,6 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/application.h"
 #include "core/kukagram_account_groups.h"
+#ifdef Q_OS_MAC
+#include "core/kukagram_account_groups_dialog.h"
+#endif // Q_OS_MAC
 #include "core/kukagram_appearance.h"
 #include "ui/chat/studio_paint.h"
 #include "ui/text/format_values.h"
@@ -151,6 +154,7 @@ enum class KukagramAction : int {
 	Next,
 	Previous,
 	Preferences,
+	Search,
 	Count,
 };
 
@@ -162,7 +166,14 @@ struct KukagramShortcut {
 	bool physicalKeyKnown = false;
 };
 
-using KukagramShortcuts = std::array<KukagramShortcut, 3>;
+using KukagramShortcuts = std::array<KukagramShortcut, int(KukagramAction::Count)>;
+
+const auto kKukagramShortcutKeys = {
+	u"next"_q,
+	u"previous"_q,
+	u"preferences"_q,
+	u"search"_q,
+};
 
 [[nodiscard]] bool HasKukagramPhysicalKey(const KukagramShortcut &binding) {
 	return binding.physicalKeyKnown || binding.physicalKey;
@@ -204,6 +215,7 @@ using KukagramShortcuts = std::array<KukagramShortcut, 3>;
 		{ Qt::Key_Right, 0, Qt::ControlModifier | Qt::AltModifier, {} },
 		{ Qt::Key_Left, 0, Qt::ControlModifier | Qt::AltModifier, {} },
 		{ Qt::Key_N, 0x2D, Qt::ControlModifier | Qt::ShiftModifier, {} },
+		{ Qt::Key_K, 0x28, Qt::ControlModifier | Qt::AltModifier, {} },
 	} };
 	const auto defaults = result;
 	const auto file = KukagramShortcutFile();
@@ -211,9 +223,8 @@ using KukagramShortcuts = std::array<KukagramShortcut, 3>;
 		return result;
 	}
 	const auto settings = QSettings(file, QSettings::IniFormat);
-	const auto keys = { u"next"_q, u"previous"_q, u"preferences"_q };
 	auto i = 0;
-	for (const auto &name : keys) {
+	for (const auto &name : kKukagramShortcutKeys) {
 		const auto prefix = name + u"/"_q;
 		if (settings.contains(prefix + u"key"_q)) {
 			auto &binding = result[i];
@@ -254,9 +265,8 @@ KukagramShortcuts &CurrentKukagramShortcuts() {
 		return false;
 	}
 	auto settings = QSettings(file, QSettings::IniFormat);
-	const auto keys = { u"next"_q, u"previous"_q, u"preferences"_q };
 	auto i = 0;
-	for (const auto &name : keys) {
+	for (const auto &name : kKukagramShortcutKeys) {
 		const auto prefix = name + u"/"_q;
 		const auto &binding = bindings[i++];
 		settings.setValue(prefix + u"key"_q, binding.key);
@@ -463,6 +473,8 @@ void ShowKukagramNotificationAccountsDialog(not_null<Main::Domain*> domain) {
 		new KukagramRecorder(&(*bindings)[1], keyGroup));
 	keyLayout->addRow(u"Открыть эти настройки:"_q,
 		new KukagramRecorder(&(*bindings)[2], keyGroup));
+	keyLayout->addRow(u"Поиск аккаунта:"_q,
+		new KukagramRecorder(&(*bindings)[3], keyGroup));
 	layout->addWidget(keyGroup);
 	auto hint = new QLabel(
 		u"Нажми кнопку сочетания, затем новые клавиши. "
@@ -1297,6 +1309,10 @@ bool Application::eventFilter(QObject *object, QEvent *e) {
 						*action == KukagramAction::Next ? 1 : -1);
 				} else {
 					InvokeQueued(this, [=] {
+						if (*action == KukagramAction::Search) {
+							ShowKukagramAccountSearch();
+							return;
+						}
 						showKukagramPreferences();
 					});
 				}

@@ -448,9 +448,17 @@ std::optional<UserIdentity> peekUserIdentity(
 	}
 	auto result = UserIdentity();
 	stream >> result.firstName >> result.lastName >> result.phone;
-	return (stream.status() == QDataStream::Ok)
-		? std::make_optional(std::move(result))
-		: std::nullopt;
+	if (stream.status() != QDataStream::Ok) {
+		return std::nullopt;
+	}
+	if (!stream.atEnd()) {
+		stream.startTransaction();
+		stream >> result.username;
+		if (!stream.commitTransaction()) {
+			result.username.clear();
+		}
+	}
+	return result;
 }
 
 QString peekUserPhone(int streamAppVersion, QDataStream &stream) {

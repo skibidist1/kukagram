@@ -32,6 +32,7 @@ struct UserIdentity {
 	QString firstName;
 	QString lastName;
 	QString phone;
+	QString username;
 };
 [[nodiscard]] std::optional<UserIdentity> peekUserIdentity(
 	int streamAppVersion,

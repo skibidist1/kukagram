@@ -3,6 +3,20 @@
 Read `README-KUKAGRAM.md` first (working rules). This note is the current
 state and the next steps.
 
+## Account search and group menu
+
+- The top of ☰ now has «Группы аккаунтов» and «Поиск аккаунта».
+  ⌘⌥K opens the same search. Enter switches to the selected account.
+- Local labels are stored in `account-labels.ini` inside the current profile.
+  Search also indexes usernames from the existing saved account summaries.
+- The group filter stays visible with inactive accounts unloaded. It can
+  be cleared from «Все аккаунты» above the filtered list.
+- Clang checked each changed translation unit. The Qt dialog checks with
+  dummy accounts passed for label persistence, username search, Enter,
+  opening a group in the menu, renaming it and deleting it.
+- A Release build was already running during the edits. Confirm an
+  incremental rebuild against the current tree before packaging.
+
 ## Release validation (2026-11-26, Codex)
 
 - The reconstructed source compiled and linked in Release for arm64 at

@@ -296,6 +296,7 @@ Main::StoredAccount Account::readStoredAccount(
 						result.name = name;
 					}
 					result.phone = identity->phone;
+					result.username = identity->username;
 				}
 			}
 		}

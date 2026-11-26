@@ -182,7 +182,10 @@ MainMenu::ToggleAccountsButton::ToggleAccountsButton(
 	}, lifetime());
 
 	auto &settings = Core::App().settings();
-	if (Core::App().domain().accounts().size() < 2
+	if (Core::App().domain().storedAccountsCount() < 2
+#ifdef Q_OS_MAC
+		&& !Core::KukagramAccountGroups::MenuGroup().current()
+#endif // Q_OS_MAC
 		&& settings.mainMenuAccountsShown()) {
 		settings.setMainMenuAccountsShown(false);
 	}
@@ -613,8 +616,40 @@ void MainMenu::setupAccounts() {
 	inner->add(object_ptr<Ui::FixedHeightWidget>(inner, st::mainMenuSkip));
 #ifdef Q_OS_MAC
 	using namespace Core::KukagramAccountGroups;
-	const auto groupControls = _inner->insert(
+	const auto actions = _inner->insert(
 		1,
+		object_ptr<Ui::VerticalLayout>(_inner.get()));
+	const auto controller = _controller;
+	Settings::AddButtonWithIcon(
+		actions,
+		rpl::single(u"Группы аккаунтов"_q),
+		st::mainMenuButton,
+		{ &st::menuIconGroups }
+	)->setClickedCallback([=] {
+		const auto window = QPointer(controller->widget().get());
+		controller->window().hideSettingsAndLayer();
+		InvokeQueued(&Core::App(), [window] {
+			Core::ShowKukagramAccountGroupsDialog([window] {
+				if (window && window->sessionContent()
+					&& !Core::Quitting() && !Core::App().passcodeLocked()) {
+					window->showMainMenu();
+				}
+			});
+		});
+	});
+	Settings::AddButtonWithIcon(
+		actions,
+		rpl::single(u"Поиск аккаунта"_q),
+		st::mainMenuButton,
+		{ &st::menuIconSearch }
+	)->setClickedCallback([=] {
+		controller->window().hideSettingsAndLayer();
+		InvokeQueued(&Core::App(), [] {
+			Core::ShowKukagramAccountSearch();
+		});
+	});
+	const auto groupControls = _inner->insert(
+		2,
 		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
 			_inner.get(),
 			object_ptr<Ui::VerticalLayout>(_inner.get())));
@@ -818,24 +853,6 @@ void MainMenu::setupMenu() {
 	)->setClickedCallback([=] {
 		controller->showSettings();
 	});
-
-#ifdef Q_OS_MAC
-	addAction(
-		rpl::single(u"Группы аккаунтов"_q),
-		{ &st::menuIconGroups }
-	)->setClickedCallback([=] {
-		const auto window = QPointer(controller->widget().get());
-		controller->window().hideSettingsAndLayer();
-		InvokeQueued(&Core::App(), [window] {
-			Core::ShowKukagramAccountGroupsDialog([window] {
-				if (window && window->sessionContent()
-					&& !Core::Quitting() && !Core::App().passcodeLocked()) {
-					window->showMainMenu();
-				}
-			});
-		});
-	});
-#endif // Q_OS_MAC
 
 	_nightThemeToggle = addAction(
 		tr::lng_menu_night_mode(),

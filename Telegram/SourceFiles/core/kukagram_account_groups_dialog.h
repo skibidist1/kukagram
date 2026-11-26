@@ -15,7 +15,9 @@ Local account groups for kukagram.
 #include "window/window_controller.h"
 
 #include <QtCore/QSignalBlocker>
+#include <QtCore/QSettings>
 #include <QtCore/QTimer>
+#include <QtGui/QShortcut>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
@@ -29,7 +31,6 @@ Local account groups for kukagram.
 
 #include <algorithm>
 #include <optional>
-#include <unordered_map>
 #include <unordered_set>
 
 namespace Core::KukagramAccountGroups {
@@ -58,15 +59,17 @@ public:
 		not_null<Main::Domain*> domain,
 		QString workDir,
 		Groups groups,
-		Fn<void()> showMenu = {})
+		Fn<void()> showMenu = {},
+		bool quickSearch = false)
 	: QDialog(parent)
 	, _domain(base::make_weak(domain))
 	, _workDir(std::move(workDir))
-	, _groups(std::move(groups)) {
+	, _groups(std::move(groups))
+	, _quickSearch(quickSearch) {
 		setAttribute(Qt::WA_DeleteOnClose);
 		setAttribute(Qt::WA_QuitOnClose, false);
 		setWindowModality(Qt::ApplicationModal);
-		setWindowTitle(u"Группы аккаунтов"_q);
+		setWindowTitle(_quickSearch ? u"Поиск аккаунта"_q : u"Группы аккаунтов"_q);
 		resize(560, 490);
 
 		const auto layout = new QVBoxLayout(this);
@@ -85,7 +88,7 @@ public:
 		layout->addLayout(toolsRow);
 		_search = new QLineEdit(this);
 		_search->setAccessibleName(u"Поиск аккаунта"_q);
-		_search->setPlaceholderText(u"Имя, @username или номер"_q);
+		_search->setPlaceholderText(u"Имя, подпись, @username или номер"_q);
 		termsChanged();
 		toolsRow->addWidget(_search, 1);
 		_view = new QComboBox(this);
@@ -106,6 +109,8 @@ public:
 		_addCurrent = addButton(actionsRow, u"Добавить текущий аккаунт"_q);
 		_open = addButton(actionsRow, u"Переключиться"_q);
 		_openInMenu = addButton(actionsRow, u"Открыть в меню ☰"_q);
+		_editLabel = addButton(actionsRow, u"Изменить подпись"_q);
+		_editLabel->setVisible(_quickSearch);
 		actionsRow->addStretch();
 		const auto close = addButton(actionsRow, u"Закрыть"_q);
 
@@ -135,6 +140,7 @@ public:
 			}
 		});
 		connect(_open, &QPushButton::clicked, this, [=] { activateSelected(); });
+		connect(_editLabel, &QPushButton::clicked, this, [=] { editLabel(); });
 		connect(_openInMenu, &QPushButton::clicked, this, [=] {
 			const auto group = selectedGroup();
 			if (!group || !liveDomain()) {
@@ -152,6 +158,9 @@ public:
 		});
 		connect(_accounts, &QListWidget::itemChanged, this, [=](
 				QListWidgetItem *item) {
+			if (_quickSearch) {
+				return;
+			}
 			const auto checked = (item->checkState() == Qt::Checked);
 			if (setMembership(item->data(Qt::UserRole).toULongLong(), checked)) {
 				filter();
@@ -174,6 +183,27 @@ public:
 			if (liveDomain()) rebuildAccounts();
 		}, _lifetime);
 
+		if (_quickSearch) {
+			for (const auto widget : std::initializer_list<QWidget*>{
+				_group, _view,
+				_add, _rename, _remove, _addCurrent, _openInMenu,
+			}) {
+				widget->hide();
+			}
+			connect(_accounts, &QListWidget::itemActivated, this, [=] {
+				activateSelected();
+			});
+			for (const auto key : { Qt::Key_Up, Qt::Key_Down }) {
+				const auto shortcut = new QShortcut(QKeySequence(key), _search);
+				shortcut->setContext(Qt::WidgetShortcut);
+				connect(shortcut, &QShortcut::activated, this, [=] {
+					moveSelection(key == Qt::Key_Down ? 1 : -1);
+				});
+			}
+			rebuildAccounts();
+			_search->setFocus();
+			return;
+		}
 		const auto &active = MenuGroup().current();
 		const auto current = active
 			? std::find_if(_groups.begin(), _groups.end(), [&](const Group &group) {
@@ -220,11 +250,73 @@ private:
 
 	void warn(const QString &text) {
 		const auto warning = new QMessageBox(
-			QMessageBox::Warning, u"Группы аккаунтов"_q,
+			QMessageBox::Warning, windowTitle(),
 			text, QMessageBox::Ok, this);
 		warning->setTextFormat(Qt::PlainText);
 		warning->setAttribute(Qt::WA_DeleteOnClose);
 		warning->open();
+	}
+
+	[[nodiscard]] QString labelsPath() const {
+		return QDir(_workDir).filePath(u"account-labels.ini"_q);
+	}
+
+	void moveSelection(int direction) {
+		for (auto i = _accounts->currentRow() + direction;
+			i >= 0 && i < _accounts->count(); i += direction) {
+			if (!_accounts->item(i)->isHidden()) {
+				_accounts->setCurrentRow(i);
+				_accounts->scrollToItem(_accounts->item(i));
+				return;
+			}
+		}
+	}
+
+	void editLabel() {
+		const auto item = _accounts->currentItem();
+		if (!liveDomain() || !item || item->isHidden()) {
+			return;
+		}
+		const auto id = item->data(Qt::UserRole).toULongLong();
+		const auto key = QString::number(id);
+		const auto path = labelsPath();
+		if (QFileInfo(path).isSymLink()) {
+			warn(u"Не удалось открыть файл локальных подписей."_q);
+			return;
+		}
+		const auto settings = QSettings(path, QSettings::IniFormat);
+		const auto input = new QInputDialog(this);
+		input->setAttribute(Qt::WA_DeleteOnClose);
+		input->setWindowTitle(u"Локальная подпись"_q);
+		input->setLabelText(u"До %1 символов. Пустое поле удаляет подпись."_q.arg(kMaxNameLength));
+		input->setTextValue(settings.value(key).toString());
+		connect(input, &QInputDialog::textValueSelected, this, [=](const QString &text) {
+			if (!liveDomain() || !id) {
+				return;
+			}
+			const auto label = NormalizeName(text);
+			if (label.isEmpty() && !text.trimmed().isEmpty()) {
+				warn(u"Введи подпись до %1 символов без переносов строк."_q.arg(kMaxNameLength));
+				return;
+			}
+			auto settings = QSettings(path, QSettings::IniFormat);
+			if (QFileInfo(path).isSymLink() || settings.status() != QSettings::NoError) {
+				warn(u"Не удалось открыть файл локальных подписей."_q);
+				return;
+			}
+			if (label.isEmpty()) {
+				settings.remove(key);
+			} else {
+				settings.setValue(key, label);
+			}
+			settings.sync();
+			if (settings.status() != QSettings::NoError) {
+				warn(u"Не удалось сохранить локальную подпись."_q);
+				return;
+			}
+			rebuildAccounts();
+		});
+		input->open();
 	}
 
 	bool commit(Groups groups, const QString &renamedActive = {}) {
@@ -356,15 +448,15 @@ private:
 		const auto selected = _accounts->currentItem()
 			? _accounts->currentItem()->data(Qt::UserRole).toULongLong() : 0;
 		_accounts->clear();
-		if (group && domain) {
-			auto liveUsernames = std::unordered_map<quint64, QString>();
-			for (const auto &[index, account] : domain->accounts()) {
-				if (const auto session = account->maybeSession()) {
-					liveUsernames.emplace(session->uniqueId(), session->user()->username());
-				}
+		if (domain && (group || _quickSearch)) {
+			auto members = std::unordered_set<quint64>();
+			if (group) {
+				members.insert(group->members.begin(), group->members.end());
 			}
-			const auto members = std::unordered_set<quint64>(
-				group->members.begin(), group->members.end());
+			const auto path = labelsPath();
+			const auto labels = QFileInfo(path).isSymLink()
+				? nullptr
+				: std::make_unique<QSettings>(path, QSettings::IniFormat);
 			const auto currentId = currentAccountId();
 			for (const auto &account : domain->storedAccounts()) {
 				const auto id = account.uniqueId;
@@ -374,9 +466,14 @@ private:
 				auto label = account.name.isEmpty()
 					? u"Аккаунт %1"_q.arg(account.index + 1)
 					: account.name;
-				if (const auto i = liveUsernames.find(id);
-					i != liveUsernames.end() && !i->second.isEmpty()) {
-					label += u"  ·  @"_q + i->second;
+				if (labels) {
+					const auto alias = NormalizeName(labels->value(QString::number(id)).toString());
+					if (!alias.isEmpty()) {
+						label = alias + u"  ·  "_q + label;
+					}
+				}
+				if (!account.username.isEmpty()) {
+					label += u"  ·  @"_q + account.username;
 				}
 				if (!account.phone.isEmpty()) {
 					label += u"  ·  "_q + Ui::FormatPhone(account.phone);
@@ -386,8 +483,10 @@ private:
 				}
 				const auto item = new QListWidgetItem(label, _accounts);
 				item->setData(Qt::UserRole, QVariant::fromValue(qulonglong(id)));
-				item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-				item->setCheckState(members.contains(id) ? Qt::Checked : Qt::Unchecked);
+				if (!_quickSearch) {
+					item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+					item->setCheckState(members.contains(id) ? Qt::Checked : Qt::Unchecked);
+				}
 				if (id == selected) {
 					_accounts->setCurrentItem(item);
 				}
@@ -399,7 +498,7 @@ private:
 	void filter() {
 		const auto blocker = QSignalBlocker(_accounts);
 		const auto group = selectedGroup();
-		const auto membersOnly = (_view->currentIndex() == 0);
+		const auto membersOnly = !_quickSearch && (_view->currentIndex() == 0);
 		auto shown = 0;
 		auto members = 0;
 		QListWidgetItem *first = nullptr;
@@ -419,7 +518,11 @@ private:
 		if (!current || current->isHidden()) {
 			_accounts->setCurrentItem(first);
 		}
-		if (!group) {
+		if (_quickSearch) {
+			_status->setText(shown
+				? u"Найдено: %1 · Enter — переключиться"_q.arg(shown)
+				: u"Аккаунты не найдены."_q);
+		} else if (!group) {
 			_status->setText(u"Создай группу, чтобы добавить аккаунты."_q);
 		} else if (!shown) {
 			_status->setText(_terms.empty()
@@ -440,8 +543,10 @@ private:
 		_rename->setEnabled(group != nullptr);
 		_remove->setEnabled(group != nullptr);
 		_view->setEnabled(group != nullptr);
-		_search->setEnabled(group != nullptr);
-		_open->setEnabled(group && item && !item->isHidden());
+		_search->setEnabled(group != nullptr || _quickSearch);
+		const auto canOpen = (group || _quickSearch) && item && !item->isHidden();
+		_open->setEnabled(canOpen);
+		_editLabel->setEnabled(canOpen);
 		_openInMenu->setEnabled(group != nullptr);
 		_addCurrent->setEnabled(group && id
 			&& std::find(group->members.begin(), group->members.end(), id)
@@ -474,6 +579,7 @@ private:
 	base::weak_ptr<Main::Domain> _domain;
 	QString _workDir;
 	Groups _groups;
+	bool _quickSearch = false;
 	QStringList _terms;
 	QComboBox *_group = nullptr;
 	QComboBox *_view = nullptr;
@@ -486,6 +592,7 @@ private:
 	QPushButton *_addCurrent = nullptr;
 	QPushButton *_open = nullptr;
 	QPushButton *_openInMenu = nullptr;
+	QPushButton *_editLabel = nullptr;
 	rpl::lifetime _lifetime;
 };
 
@@ -493,7 +600,9 @@ private:
 
 namespace Core {
 
-inline void ShowKukagramAccountGroupsDialog(Fn<void()> showMenu = {}) {
+inline void ShowKukagramAccountGroupsDialog(
+		Fn<void()> showMenu = {},
+		bool quickSearch = false) {
 	if (Quitting() || App().passcodeLocked() || !App().domain().started()) {
 		return;
 	}
@@ -504,7 +613,9 @@ inline void ShowKukagramAccountGroupsDialog(Fn<void()> showMenu = {}) {
 	}
 	App().activate();
 	const auto parent = QApplication::activeWindow();
-	auto result = KukagramAccountGroups::Load(cWorkingDir());
+	auto result = quickSearch
+		? KukagramAccountGroups::ReadResult{ .ok = true }
+		: KukagramAccountGroups::Load(cWorkingDir());
 	if (!result.ok) {
 		const auto warning = new QMessageBox(
 			QMessageBox::Warning,
@@ -516,14 +627,21 @@ inline void ShowKukagramAccountGroupsDialog(Fn<void()> showMenu = {}) {
 		warning->open();
 		return;
 	}
-	KukagramAccountGroups::RefreshMenuGroup(result.groups);
+	if (!quickSearch) {
+		KukagramAccountGroups::RefreshMenuGroup(result.groups);
+	}
 	const auto dialog = new KukagramAccountGroups::GroupsDialog(
 		parent,
 		&App().domain(),
 		cWorkingDir(),
 		std::move(result.groups),
-		std::move(showMenu));
+		std::move(showMenu),
+		quickSearch);
 	dialog->show();
+}
+
+inline void ShowKukagramAccountSearch() {
+	ShowKukagramAccountGroupsDialog({}, true);
 }
 
 } // namespace Core
