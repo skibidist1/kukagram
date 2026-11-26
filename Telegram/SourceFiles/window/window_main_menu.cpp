@@ -21,6 +21,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/click_handler_types.h"
 #ifdef Q_OS_MAC
 #include "core/kukagram_account_groups_dialog.h"
+#include "core/kukagram_account_grid.h"
+#include "core/kukagram_appearance.h"
 #include "mainwindow.h"
 #endif
 #include "data/data_changes.h"
@@ -648,6 +650,19 @@ void MainMenu::setupAccounts() {
 			Core::ShowKukagramAccountSearch();
 		});
 	});
+	if (Core::KukagramAppearance::Current().accountGrid) {
+		Settings::AddButtonWithIcon(
+			actions,
+			rpl::single(u"Сетка аккаунтов"_q),
+			st::mainMenuButton,
+			{ &st::menuIconProfile }
+		)->setClickedCallback([=] {
+			controller->window().hideSettingsAndLayer();
+			InvokeQueued(&Core::App(), [] {
+				Core::ShowKukagramAccountGrid();
+			});
+		});
+	}
 	const auto groupControls = _inner->insert(
 		2,
 		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(

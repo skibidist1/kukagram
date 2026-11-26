@@ -3,6 +3,30 @@
 Read `README-KUKAGRAM.md` first (working rules). This note is the current
 state and the next steps.
 
+## Design pack (2026-11-26, Claude)
+
+The user picked five design items. Each has its own switch in the
+appearance dialog («Новое оформление Kukagram»), stored in `appearance.ini`
+(`theme`, `liveBackground`, `accountGrid`, `switchToast`, `splash`), all on
+by default. «Вернуть как было» there switches all five off.
+
+- Purple theme: `core/kukagram_theme.h` overrides accent palette keys in
+  memory only, re-applied after any theme change (deferred so the theme
+  cache never stores purple). Switching it off restores the saved colors.
+- Live background: `ui/chat/studio_moon.h` caches per-pixel sphere geometry,
+  so rotation only resamples the texture. `HistoryWidget::animateEmptyMoon()`
+  rotates the empty-screen Moon (80 ms frames) and twinkles stars around it.
+- Account grid: `core/kukagram_account_grid.h`, opened from ☰ «Сетка
+  аккаунтов» or ⌘⌥G (new `grid` hotkey). Ring color = account group.
+- Switch toast: `Application::showKukagramSwitchToast()` shows the account,
+  group and position for 1.5 s after each switch, not at startup.
+- Splash: `core/kukagram_splash.h`, logo for 0.9 s at startup, then fades.
+- Checked: build, rules hook, splash and purple theme on a test profile,
+  Moon/stars and purple sidebar in the installed app. Grid and toast were not
+  clicked through; the user tries them.
+- Rollback: Git tag `kukagram-before-design-2026-11-26` and the app copy
+  `~/Developer/kukagram-backups/before-design-20261126/kukagram.app`.
+
 ## Hotkeys: user's choice wins (2026-11-26, Claude)
 
 - The user binds ⌘W (next account) and ⌘E (previous) on purpose and

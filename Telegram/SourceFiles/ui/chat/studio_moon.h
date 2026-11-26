@@ -1,5 +1,7 @@
 #pragma once
 
+#include "base/algorithm.h"
+
 #include <QtCore/QCoreApplication>
 #include <QtCore/QFile>
 #include <QtCore/QTimer>
@@ -9,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <vector>
 
 namespace Ui::Studio {
 
@@ -124,44 +127,82 @@ private:
 		return qRgb(channel(16), channel(8), channel(0));
 	}
 
-	[[nodiscard]] QImage render(int pixels) const {
-		constexpr auto kPi = std::numbers::pi_v<float>;
-		const auto &texture = Texture();
-		if (texture.isNull()) {
-			return {};
+	struct Geometry {
+		int pixels = 0;
+		qreal latitude = 0.;
+		std::vector<float> longitude;
+		std::vector<float> row;
+		std::vector<float> shade;
+		std::vector<uchar> alpha;
+	};
+
+	void prepareGeometry(int pixels) {
+		if (_geometry.pixels == pixels && _geometry.latitude == _latitude) {
+			return;
 		}
-		const auto yaw = float(_longitude / 360.);
+		constexpr auto kPi = std::numbers::pi_v<float>;
 		const auto pitch = float(_latitude) * kPi / 180.f;
 		const auto sinPitch = std::sin(pitch);
 		const auto cosPitch = std::cos(pitch);
 		const auto step = 2.f / pixels;
 		const auto inner = 1.f - step / 2.f;
 		const auto outer = 1.f + step / 2.f;
-		auto frame = QImage(pixels, pixels, QImage::Format_ARGB32_Premultiplied);
-		if (frame.isNull()) {
-			return frame;
-		}
-		frame.fill(Qt::transparent);
+		const auto count = std::size_t(pixels) * std::size_t(pixels);
+		_geometry.pixels = pixels;
+		_geometry.latitude = _latitude;
+		_geometry.longitude.assign(count, 0.f);
+		_geometry.row.assign(count, 0.f);
+		_geometry.shade.assign(count, 0.f);
+		_geometry.alpha.assign(count, 0);
 		for (auto row = 0; row != pixels; ++row) {
 			const auto up = 1.f - (row + .5f) * step;
-			const auto scan = reinterpret_cast<QRgb*>(frame.scanLine(row));
 			for (auto column = 0; column != pixels; ++column) {
 				const auto right = (column + .5f) * step - 1.f;
 				const auto distanceSquared = right * right + up * up;
 				if (distanceSquared >= outer * outer) {
 					continue;
 				}
-				const auto alpha = (distanceSquared <= inner * inner)
+				const auto index = std::size_t(row) * pixels + column;
+				_geometry.alpha[index] = (distanceSquared <= inner * inner)
 					? 255
-					: qRound(255.f * ((1.f - std::sqrt(distanceSquared)) / step + .5f));
+					: uchar(std::clamp(int(base::SafeRound(255.f
+						* ((1.f - std::sqrt(distanceSquared)) / step + .5f))), 1, 255));
 				const auto front = std::sqrt(std::max(0.f, 1.f - distanceSquared));
 				const auto north = std::clamp(up * cosPitch + front * sinPitch, -1.f, 1.f);
 				const auto depth = front * cosPitch - up * sinPitch;
-				const auto longitude = .5f + yaw + std::atan2(right, depth) / (2.f * kPi);
-				const auto latitude = .5f - std::asin(north) / kPi;
-				const auto terrain = Sample(texture, longitude, latitude);
+				_geometry.longitude[index] = .5f + std::atan2(right, depth) / (2.f * kPi);
+				_geometry.row[index] = .5f - std::asin(north) / kPi;
 				const auto sunlight = -.42f * right + .34f * up + .84f * front;
-				const auto shade = .36f + .60f * std::max(0.f, sunlight);
+				_geometry.shade[index] = .36f + .60f * std::max(0.f, sunlight);
+			}
+		}
+	}
+
+	[[nodiscard]] QImage render(int pixels) {
+		const auto &texture = Texture();
+		if (texture.isNull()) {
+			return {};
+		}
+		prepareGeometry(pixels);
+		const auto yaw = float(_longitude / 360.);
+		auto frame = QImage(pixels, pixels, QImage::Format_ARGB32_Premultiplied);
+		if (frame.isNull()) {
+			return frame;
+		}
+		frame.fill(Qt::transparent);
+		for (auto row = 0; row != pixels; ++row) {
+			const auto scan = reinterpret_cast<QRgb*>(frame.scanLine(row));
+			for (auto column = 0; column != pixels; ++column) {
+				const auto index = std::size_t(row) * pixels + column;
+				const auto alpha = _geometry.alpha[index];
+				if (!alpha) {
+					continue;
+				}
+				const auto terrain = Sample(
+					texture,
+					_geometry.longitude[index] + yaw,
+					_geometry.row[index]);
+				const auto shade = _geometry.shade[index];
 				const auto tint = [&](int color, float gain, float offset) {
 					return std::clamp(qRound(color * shade * gain + offset), 0, 255);
 				};
@@ -175,6 +216,7 @@ private:
 		return frame;
 	}
 
+	Geometry _geometry;
 	QImage _frame;
 	qreal _longitude = 0.;
 	qreal _latitude = 0.;

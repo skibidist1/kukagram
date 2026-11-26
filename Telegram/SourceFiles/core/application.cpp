@@ -9,7 +9,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/kukagram_account_groups.h"
 #ifdef Q_OS_MAC
 #include "core/kukagram_account_groups_dialog.h"
+#include "core/kukagram_account_grid.h"
 #endif // Q_OS_MAC
+#include "core/kukagram_theme.h"
+#include "core/kukagram_splash.h"
 #include "core/kukagram_appearance.h"
 #include "ui/chat/studio_paint.h"
 #include "ui/text/format_values.h"
@@ -155,6 +158,7 @@ enum class KukagramAction : int {
 	Previous,
 	Preferences,
 	Search,
+	Grid,
 	Count,
 };
 
@@ -173,6 +177,7 @@ const auto kKukagramShortcutKeys = {
 	u"previous"_q,
 	u"preferences"_q,
 	u"search"_q,
+	u"grid"_q,
 };
 
 [[nodiscard]] bool HasKukagramPhysicalKey(const KukagramShortcut &binding) {
@@ -216,6 +221,7 @@ const auto kKukagramShortcutKeys = {
 		{ Qt::Key_Left, 0, Qt::ControlModifier | Qt::AltModifier, {} },
 		{ Qt::Key_N, 0x2D, Qt::ControlModifier | Qt::ShiftModifier, {} },
 		{ Qt::Key_K, 0x28, Qt::ControlModifier | Qt::AltModifier, {} },
+		{ Qt::Key_G, 0x05, Qt::ControlModifier | Qt::AltModifier, {} },
 	} };
 	const auto defaults = result;
 	const auto file = KukagramShortcutFile();
@@ -478,6 +484,8 @@ void ShowKukagramNotificationAccountsDialog(not_null<Main::Domain*> domain) {
 		new KukagramRecorder(&(*bindings)[2], keyGroup));
 	keyLayout->addRow(u"Поиск аккаунта:"_q,
 		new KukagramRecorder(&(*bindings)[3], keyGroup));
+	keyLayout->addRow(u"Сетка аккаунтов:"_q,
+		new KukagramRecorder(&(*bindings)[4], keyGroup));
 	layout->addWidget(keyGroup);
 	auto hint = new QLabel(
 		u"Нажми кнопку сочетания, затем новые клавиши. "
@@ -640,6 +648,30 @@ void ShowKukagramAppearanceDialog() {
 		legacyLayout->addWidget(checkbox);
 	}
 	layout->addWidget(legacy);
+
+	auto fresh = new QGroupBox(u"Новое оформление Kukagram"_q, dialog);
+	auto freshLayout = new QVBoxLayout(fresh);
+	auto theme = new QCheckBox(u"Фиолетовая тема: кнопки, выделение, счётчики"_q, dialog);
+	auto liveBackground = new QCheckBox(u"Живой фон: Луна вращается, звёзды мерцают"_q, dialog);
+	auto accountGrid = new QCheckBox(u"Сетка аккаунтов в меню ☰ (⌘⌥G)"_q, dialog);
+	auto switchToast = new QCheckBox(u"Подсказка при смене аккаунта"_q, dialog);
+	auto splash = new QCheckBox(u"Экран загрузки Kukagram при запуске"_q, dialog);
+	theme->setChecked(original.theme);
+	liveBackground->setChecked(original.liveBackground);
+	accountGrid->setChecked(original.accountGrid);
+	switchToast->setChecked(original.switchToast);
+	splash->setChecked(original.splash);
+	for (auto checkbox : { theme, liveBackground, accountGrid, switchToast, splash }) {
+		freshLayout->addWidget(checkbox);
+	}
+	auto freshOff = new QPushButton(u"Вернуть как было (выключить новое)"_q, dialog);
+	freshLayout->addWidget(freshOff);
+	QObject::connect(freshOff, &QPushButton::clicked, dialog, [=] {
+		for (auto checkbox : { theme, liveBackground, accountGrid, switchToast, splash }) {
+			checkbox->setChecked(false);
+		}
+	});
+	layout->addWidget(fresh);
 	auto row = new QHBoxLayout();
 	auto allOff = new QPushButton(u"Выключить всё"_q, dialog);
 	auto allOn = new QPushButton(u"Включить всё"_q, dialog);
@@ -647,12 +679,14 @@ void ShowKukagramAppearanceDialog() {
 	row->addWidget(allOn);
 	layout->addLayout(row);
 	QObject::connect(allOff, &QPushButton::clicked, dialog, [=] {
-		for (auto checkbox : { studio, colors, bubbles, animations, avatar }) {
+		for (auto checkbox : { studio, colors, bubbles, animations, avatar,
+				theme, liveBackground, accountGrid, switchToast, splash }) {
 			checkbox->setChecked(false);
 		}
 	});
 	QObject::connect(allOn, &QPushButton::clicked, dialog, [=] {
-		for (auto checkbox : { studio, colors, bubbles, animations, avatar }) {
+		for (auto checkbox : { studio, colors, bubbles, animations, avatar,
+				theme, liveBackground, accountGrid, switchToast, splash }) {
 			checkbox->setChecked(true);
 		}
 	});
@@ -667,19 +701,23 @@ void ShowKukagramAppearanceDialog() {
 			dialog->reject();
 			return;
 		}
-		const auto values = KukagramAppearance::Values{
-			colors->isChecked(),
-			bubbles->isChecked(),
-			animations->isChecked(),
-			avatar->isChecked(),
-			studio->isChecked(),
-			KukagramAppearance::MoonVisible(),
-		};
+		auto values = KukagramAppearance::Current();
+		values.colors = colors->isChecked();
+		values.bubbles = bubbles->isChecked();
+		values.animations = animations->isChecked();
+		values.avatar = avatar->isChecked();
+		values.studio = studio->isChecked();
+		values.theme = theme->isChecked();
+		values.liveBackground = liveBackground->isChecked();
+		values.accountGrid = accountGrid->isChecked();
+		values.switchToast = switchToast->isChecked();
+		values.splash = splash->isChecked();
 		if (!KukagramAppearance::Save(values)) {
 			ShowKukagramWarning(dialog,
 				u"Не удалось сохранить внешний вид."_q);
 			return;
 		}
+		KukagramTheme::Apply();
 		dialog->accept();
 	});
 	dialog->show();
@@ -967,7 +1005,11 @@ void Application::run() {
 	_domain->activeChanges(
 	) | rpl::on_next([=](not_null<Main::Account*> account) {
 		showAccount(account);
+#ifdef Q_OS_MAC
+		showKukagramSwitchToast(account);
+#endif // Q_OS_MAC
 	}, _lifetime);
+	KukagramTheme::Start();
 
 	QCoreApplication::instance()->installEventFilter(this);
 
@@ -991,6 +1033,7 @@ void Application::run() {
 
 	DEBUG_LOG(("Application Info: showing."));
 	_lastActivePrimaryWindow->finishFirstShow();
+	ShowKukagramSplash(_lastActivePrimaryWindow->widget()->bodyWidget());
 
 	if (!_lastActivePrimaryWindow->locked() && cStartToSettings()) {
 		_lastActivePrimaryWindow->showSettings();
@@ -1222,6 +1265,64 @@ void Application::showKukagramPreferences() {
 }
 
 
+#ifdef Q_OS_MAC
+void Application::showKukagramSwitchToast(not_null<Main::Account*> account) {
+	static auto first = true;
+	if (base::take(first)) {
+		return;
+	}
+	_kukagramToastLifetime.destroy();
+	account->sessionValue(
+	) | rpl::filter([](Main::Session *session) {
+		return session != nullptr;
+	}) | rpl::take(1) | rpl::on_next([=](Main::Session *session) {
+		if (!KukagramAppearance::Current().switchToast
+			|| !_lastActivePrimaryWindow) {
+			return;
+		}
+		const auto id = session->uniqueId();
+		auto name = session->user()->name();
+		const auto labels = QSettings(
+			QDir(cWorkingDir()).filePath(u"account-labels.ini"_q),
+			QSettings::IniFormat);
+		const auto alias = labels.value(QString::number(id)).toString().trimmed();
+		if (!alias.isEmpty()) {
+			name = alias + u" · "_q + name;
+		}
+		auto ids = std::vector<quint64>();
+		auto groupName = QString();
+		const auto &menuGroup = KukagramAccountGroups::MenuGroup().current();
+		if (menuGroup && ranges::contains(menuGroup->members, id)) {
+			groupName = menuGroup->name;
+			ids = menuGroup->members;
+		} else {
+			for (const auto &stored : _domain->storedAccounts()) {
+				if (stored.uniqueId) {
+					ids.push_back(stored.uniqueId);
+				}
+			}
+		}
+		const auto position = ranges::find(ids, id);
+		auto details = QStringList();
+		if (!groupName.isEmpty()) {
+			details.push_back(u"группа «%1»"_q.arg(groupName));
+		}
+		if (position != end(ids)) {
+			details.push_back(u"%1 из %2"_q
+				.arg(int(position - begin(ids)) + 1)
+				.arg(ids.size()));
+		}
+		auto text = TextWithEntities{ u"→ "_q + name };
+		text.entities.push_back(
+			{ EntityType::Bold, 0, int(text.text.size()) });
+		if (!details.isEmpty()) {
+			text.text += u"\n"_q + details.join(u" · "_q);
+		}
+		_lastActivePrimaryWindow->showToast(std::move(text), crl::time(1500));
+	}, _kukagramToastLifetime);
+}
+#endif // Q_OS_MAC
+
 void Application::showKukagramAppearance() {
 #ifdef Q_OS_MAC
 	if (!_domain || !_domain->started() || passcodeLocked() || Core::Quitting()) {
@@ -1316,6 +1417,13 @@ bool Application::eventFilter(QObject *object, QEvent *e) {
 					InvokeQueued(this, [=] {
 						if (*action == KukagramAction::Search) {
 							ShowKukagramAccountSearch();
+							return;
+						} else if (*action == KukagramAction::Grid) {
+							if (KukagramAppearance::Current().accountGrid) {
+								ShowKukagramAccountGrid();
+							} else {
+								ShowKukagramAccountSearch();
+							}
 							return;
 						}
 						showKukagramPreferences();

@@ -204,6 +204,7 @@ public:
 	void activate();
 	void showKukagramPreferences();
 	void showKukagramAppearance();
+	void showKukagramSwitchToast(not_null<Main::Account*> account);
 	[[nodiscard]] Window::SavedWindows *savedWindows() const {
 		return _savedWindows.get();
 	}
@@ -499,6 +500,7 @@ private:
 
 	rpl::event_stream<> _materializeLocalDraftsRequests;
 
+	rpl::lifetime _kukagramToastLifetime;
 	rpl::lifetime _lifetime;
 
 	crl::time _lastNonIdleTime = 0;

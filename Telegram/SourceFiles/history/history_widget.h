@@ -370,6 +370,7 @@ public:
 private:
 	struct EmptyMoon;
 	[[nodiscard]] bool canUseEmptyMoon() const;
+	void animateEmptyMoon();
 	[[nodiscard]] QRectF emptyMoonRect() const;
 	void stopEmptyMoonDrag();
 

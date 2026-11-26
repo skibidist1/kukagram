@@ -274,7 +274,56 @@ struct HistoryWidget::EmptyMoon {
 	Ui::Studio::Moon sphere;
 	std::optional<QPointF> dragPosition;
 	base::unique_qptr<Ui::PopupMenu> menu;
+	base::Timer live;
+	crl::time liveTick = 0;
 };
+
+namespace {
+
+constexpr auto kLiveMoonFrame = crl::time(80);
+constexpr auto kLiveMoonDegreesPerSecond = 6.;
+constexpr auto kLiveStars = 30;
+
+[[nodiscard]] QRectF LiveStarsRect(QRectF moon, QRect bounds) {
+	const auto d = moon.width();
+	return moon.adjusted(-d * 0.9, -d * 0.45, d * 0.45, d * 0.6).intersected(
+		QRectF(bounds));
+}
+
+void PaintLiveStars(QPainter &p, QRectF area, QRectF moon, crl::time now) {
+	if (area.isEmpty()) {
+		return;
+	}
+	const auto dark = st::windowBg->c.lightness() < 128;
+	const auto base = dark ? QColor(232, 226, 255) : QColor(122, 92, 222);
+	auto seed = quint32(0x6b756b61);
+	const auto next = [&] {
+		seed = seed * 1664525u + 1013904223u;
+		return float(seed >> 8) / float(1u << 24);
+	};
+	auto hq = PainterHighQualityEnabler(p);
+	p.setPen(Qt::NoPen);
+	const auto center = moon.center();
+	const auto radius = moon.width() / 2. + 4.;
+	for (auto i = 0; i != kLiveStars; ++i) {
+		const auto point = QPointF(
+			area.x() + next() * area.width(),
+			area.y() + next() * area.height());
+		const auto size = 1. + next() * 1.4;
+		const auto speed = 0.6 + next() * 1.6;
+		const auto phase = next() * 6.2832;
+		if (QLineF(point, center).length() < radius) {
+			continue;
+		}
+		const auto wave = 0.5 + 0.5 * std::sin(now / 1000. * speed + phase);
+		auto color = base;
+		color.setAlphaF(0.18 + 0.62 * wave);
+		p.setBrush(color);
+		p.drawEllipse(point, size, size);
+	}
+}
+
+} // namespace
 
 HistoryWidget::HistoryWidget(
 	QWidget *parent,
@@ -9469,6 +9518,28 @@ void HistoryWidget::mousePressEvent(QMouseEvent *e) {
 	}
 }
 
+void HistoryWidget::animateEmptyMoon() {
+	if (!_emptyMoon
+		|| !canUseEmptyMoon()
+		|| !Core::KukagramAppearance::MoonVisible()
+		|| !Core::KukagramAppearance::Current().liveBackground
+		|| !isVisible()) {
+		return;
+	}
+	const auto now = crl::now();
+	const auto elapsed = _emptyMoon->liveTick
+		? std::min(now - _emptyMoon->liveTick, crl::time(250))
+		: kLiveMoonFrame;
+	_emptyMoon->liveTick = now;
+	if (!_emptyMoon->dragPosition) {
+		_emptyMoon->sphere.rotate(
+			QPointF(kLiveMoonDegreesPerSecond * elapsed / 1000., 0.));
+	}
+	const auto moon = emptyMoonRect();
+	update(LiveStarsRect(moon, rect()).toAlignedRect().united(
+		moon.toAlignedRect()));
+}
+
 bool HistoryWidget::canUseEmptyMoon() const {
 	return !_list
 		&& Core::KukagramAppearance::Current().studio
@@ -11934,7 +12005,15 @@ void HistoryWidget::paintEvent(QPaintEvent *e) {
 			if (!_emptyMoon) {
 				_emptyMoon = std::make_unique<EmptyMoon>();
 			}
+			const auto live = Core::KukagramAppearance::Current().liveBackground;
+			if (live) {
+				PaintLiveStars(p, LiveStarsRect(moon, rect()), moon, crl::now());
+			}
 			_emptyMoon->sphere.paint(p, moon);
+			if (live && !_emptyMoon->live.isActive()) {
+				_emptyMoon->live.setCallback([=] { animateEmptyMoon(); });
+				_emptyMoon->live.callOnce(kLiveMoonFrame);
+			}
 		}
 		const auto w = 0
 			+ st::msgServiceFont->width(tr::lng_willbe_history(tr::now))
