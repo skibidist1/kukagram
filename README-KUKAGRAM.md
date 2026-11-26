@@ -25,10 +25,26 @@ Files were checked against the logged listings wherever those exist.
 
 Known gaps:
 
-- The tree has not been compiled yet: the build toolchain was lost as well.
 - `ReadTdataAccounts` in `storage/storage_domain.cpp` contains about twenty
   hand-written lines (passcode wrap key derivation and account info decrypt)
   where the logged source was truncated.
+
+## Building and packaging on this Mac
+
+With the arm64 tools mounted at `/Volumes/KG`, run these commands from the
+repository root:
+
+```sh
+bash ../kukagram-build/build-release.sh
+bash kukagram-patches/package-app.sh
+```
+
+The packager prints the paths to the ad-hoc signed app and ZIP under
+`../kukagram-build/packages.noindex`. It checks the bundle dependencies,
+the signature and ZIP integrity. The build uses the Telegram test API
+credentials unless configured with the local private API file. When switching
+an existing build to private credentials, reconfigure with
+`-C ../kukagram-build/api-private.cmake -DTDESKTOP_API_TEST=OFF` before rebuilding.
 
 ## Working rules (Claude and Codex)
 

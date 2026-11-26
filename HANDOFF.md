@@ -3,14 +3,40 @@
 Read `README-KUKAGRAM.md` first (working rules). This note is the current
 state and the next steps.
 
+## Release validation (2026-11-26, Codex)
+
+- The reconstructed source compiled and linked in Release for arm64 at
+  `0c40841`. The build log is `~/Developer/kukagram-build/logs/release-codex.zeCQPKGW`.
+  The linker warned about dependencies targeting newer macOS versions. The
+  final bundle declares macOS 26.6.2 based on its packaged libraries.
+- `kukagram-patches/package-app.sh` created the locally signed test ZIP at
+  `~/Developer/kukagram-build/packages.noindex/kukagram-release.qJYR1y9N/kukagram-arm64.zip`.
+  ZIP integrity and strict deep signature verification passed after extraction.
+  The process loaded bundled libraries and no libraries from `/Volumes/KG`.
+- On a temporary profile, startup, the QR and phone screens, and the native
+  `tdata` folder picker worked. Selecting a synthetic empty folder produced
+  the expected “Папка tdata не найдена” message and returned to the QR screen.
+  On this Mac, place `TelegramForcePortable` next to the extracted `.app`
+  for UI testing as well as passing `-workdir`. This also isolates any launch
+  without arguments by the UI automation tool.
+- The first UI run reopened the test executable without its profile arguments
+  and briefly showed the personal profile. The replacement test run used the
+  portable marker with a fresh profile. The installed app's signature and
+  executable checksum still match the pre-test values.
+- This ZIP uses the public test API configuration. A QR request returned
+  `API_ID_PUBLISHED_FLOOD`. Successful authorization, switching accounts,
+  the group-filter menu and importing an authorized session remain to be
+  tested using separately prepared test accounts and test data.
+- The local `Telegram/lib_ui` checkout has the documented patch already
+  applied as a local commit. The parent repo still pins the upstream revision.
+
 ## State
 
 - Source: this repository, branch `kukagram`, pushed to
   `github.com/skibidist1/kukagram` (private). GitHub Actions are disabled on
   purpose; do not re-enable them.
 - The source was reconstructed on 2026-11-26 after the original work folder
-  was lost (see README). It now configures and compiles: a Release build
-  reached 1647 of 2437 steps with no errors when this note was written.
+  was lost (see README). The Release build and packaging results are above.
 - `/Applications/kukagram.app` is the old DEBUG build installed by Codex on
   2026-11-22. It is untouched. Do not replace it without the checklist in the
   README.
@@ -52,33 +78,20 @@ Problems already solved, keep these settings:
 
 ## Next steps
 
-1. Wait for `build-release.sh` to finish. It runs ninja with `-k 0`, so one
-   pass reports every failing file (`grep '^FAILED' logs/release.log`). Fix
-   the code, commit, rerun the script (ninja resumes). Missing pieces are
-   usually edits Codex made with Python scripts: search the old Codex session
-   logs in `~/.codex/sessions` for the missing identifier, as was done for
-   `introTdataImportLeft` in `intro.style`.
-2. Package and sign the bundle. The old `package-app.sh` was lost; write a
-   new one: copy the built `.app` to a temporary folder, ad-hoc sign nested
-   frameworks and the app (`codesign --force --deep --sign -`), then
-   `codesign --verify --deep --strict`.
-3. Real Telegram API credentials: the build uses public test credentials.
-   Ask the user to put `api-private.cmake` with `TDESKTOP_API_ID` /
-   `TDESKTOP_API_HASH` into `~/Developer/kukagram-build/` (never into git),
-   then reconfigure.
-4. Test on an isolated profile only (`-workdir` pointing to a temporary
+1. Once `~/Developer/kukagram-build/api-private.cmake` is available, reconfigure
+   with that file and `TDESKTOP_API_TEST=OFF`, rebuild and run the packager.
+2. Test on an isolated profile only (`-workdir` pointing to a temporary
    folder), never on `~/Library/Application Support/kukagram`: start, QR and
    phone login screens, account switching, account groups including the
    "Открыть в меню ☰" group mode, tdata import dialog.
-5. Only then replace `/Applications/kukagram.app`, keeping the old bundle as a
+3. Only then replace `/Applications/kukagram.app`, keeping the old bundle as a
    backup, and only with the user's go-ahead.
 
 ## Done in this session
 
 - `15be344`: account search in both Kukagram dialogs finds phones typed with
   `+`, spaces or brackets, and shows phones formatted.
-- Group mode in the ☰ menu (written by Codex on 2026-11-23, never built
-  before) is in the source and compiles as part of this build.
+- Group mode in the ☰ menu is in the source and compiled in Release.
 
 ## Observed in the installed app (not fixed yet)
 
