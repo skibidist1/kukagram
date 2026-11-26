@@ -52,8 +52,12 @@ Problems already solved, keep these settings:
 
 ## Next steps
 
-1. Wait for `build-release.sh` to finish. On a compile error, fix the code,
-   commit, rerun the script (ninja resumes).
+1. Wait for `build-release.sh` to finish. It runs ninja with `-k 0`, so one
+   pass reports every failing file (`grep '^FAILED' logs/release.log`). Fix
+   the code, commit, rerun the script (ninja resumes). Missing pieces are
+   usually edits Codex made with Python scripts: search the old Codex session
+   logs in `~/.codex/sessions` for the missing identifier, as was done for
+   `introTdataImportLeft` in `intro.style`.
 2. Package and sign the bundle. The old `package-app.sh` was lost; write a
    new one: copy the built `.app` to a temporary folder, ad-hoc sign nested
    frameworks and the app (`codesign --force --deep --sign -`), then
