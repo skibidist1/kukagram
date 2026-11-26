@@ -5,7 +5,8 @@ This guide defines repository-wide instructions for coding agents working with t
 ## Kukagram fork
 
 This checkout is Kukagram, the user's personal fork. Before any work, read
-`README-KUKAGRAM.md` and follow its working rules: work only in
+`README-KUKAGRAM.md` and follow its working rules, then `HANDOFF.md` for
+the current state and next steps: work only in
 `~/Developer/kukagram`, one agent at a time, finish with a commit and
 `git push`, and never touch `tdata`, sessions or `api-private.cmake`. The
 Kukagram rules take precedence over the upstream task workflow below.
