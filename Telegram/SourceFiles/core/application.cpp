@@ -221,7 +221,7 @@ const auto kKukagramShortcutKeys = {
 		{ Qt::Key_Left, 0, Qt::ControlModifier | Qt::AltModifier, {} },
 		{ Qt::Key_N, 0x2D, Qt::ControlModifier | Qt::ShiftModifier, {} },
 		{ Qt::Key_K, 0x28, Qt::ControlModifier | Qt::AltModifier, {} },
-		{ Qt::Key_G, 0x05, Qt::ControlModifier | Qt::AltModifier, {} },
+		{ Qt::Key_4, 0x15, Qt::AltModifier, {} },
 	} };
 	const auto defaults = result;
 	const auto file = KukagramShortcutFile();
@@ -653,7 +653,7 @@ void ShowKukagramAppearanceDialog() {
 	auto freshLayout = new QVBoxLayout(fresh);
 	auto theme = new QCheckBox(u"Фиолетовая тема: кнопки, выделение, счётчики"_q, dialog);
 	auto liveBackground = new QCheckBox(u"Живой фон: Луна вращается, звёзды мерцают"_q, dialog);
-	auto accountGrid = new QCheckBox(u"Сетка аккаунтов в меню ☰ (⌘⌥G)"_q, dialog);
+	auto accountGrid = new QCheckBox(u"Сетка аккаунтов в меню ☰ (⌥4)"_q, dialog);
 	auto switchToast = new QCheckBox(u"Подсказка при смене аккаунта"_q, dialog);
 	auto splash = new QCheckBox(u"Экран загрузки Kukagram при запуске"_q, dialog);
 	theme->setChecked(original.theme);

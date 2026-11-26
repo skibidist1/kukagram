@@ -17,7 +17,7 @@ by default. «Вернуть как было» there switches all five off.
   so rotation only resamples the texture. `HistoryWidget::animateEmptyMoon()`
   rotates the empty-screen Moon (80 ms frames) and twinkles stars around it.
 - Account grid: `core/kukagram_account_grid.h`, opened from ☰ «Сетка
-  аккаунтов» or ⌘⌥G (new `grid` hotkey). Ring color = account group.
+  аккаунтов» or ⌥4 (new `grid` hotkey, the user asked for Option-4). Ring color = account group.
 - Switch toast: `Application::showKukagramSwitchToast()` shows the account,
   group and position for 1.5 s after each switch, not at startup.
 - Splash: `core/kukagram_splash.h`, logo for 0.9 s at startup, then fades.
