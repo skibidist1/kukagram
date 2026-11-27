@@ -14,8 +14,11 @@ front and ~1–3% in the background.
 - `CollectibleEmoji` in `ui/effects/premium_stars_colored.cpp` (upstream
   code) now requests repaints at most every 100 ms instead of every frame.
 - The Studio wallpaper is drawn once per size into a cached image.
-- The live Moon runs at 5 fps, only while the window is active, renders
-  at most 280 px, and keeps its texture while in use.
+- The live Moon renders with precomputed integer texel lookups into a reused
+  frame (about 1 ms per frame at full Retina size in a standalone benchmark,
+  was 2.6 ms) and is drawn pixel-aligned without scaling. It runs at 10 fps,
+  only while the window is active, and repaints just the Moon and the star
+  dots, not the area around them. Its texture stays loaded while in use.
 - Remaining load in front is regular Telegram work: chat list updates,
   animated emoji and the live Moon on the empty screen. Telegram's own power
   saving settings or the «Живой фон» switch reduce it further.

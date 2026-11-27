@@ -280,7 +280,7 @@ struct HistoryWidget::EmptyMoon {
 
 namespace {
 
-constexpr auto kLiveMoonFrame = crl::time(200);
+constexpr auto kLiveMoonFrame = crl::time(100);
 constexpr auto kLiveMoonIdleCheck = crl::time(1000);
 constexpr auto kLiveMoonDegreesPerSecond = 6.;
 constexpr auto kLiveStars = 30;
@@ -291,21 +291,26 @@ constexpr auto kLiveStars = 30;
 		QRectF(bounds));
 }
 
-void PaintLiveStars(QPainter &p, QRectF area, QRectF moon, crl::time now) {
+struct LiveStar {
+	QPointF point;
+	qreal size = 0.;
+	qreal speed = 0.;
+	qreal phase = 0.;
+};
+
+[[nodiscard]] std::vector<LiveStar> LiveStars(QRectF area, QRectF moon) {
+	auto result = std::vector<LiveStar>();
 	if (area.isEmpty()) {
-		return;
+		return result;
 	}
-	const auto dark = st::windowBg->c.lightness() < 128;
-	const auto base = dark ? QColor(232, 226, 255) : QColor(122, 92, 222);
 	auto seed = quint32(0x6b756b61);
 	const auto next = [&] {
 		seed = seed * 1664525u + 1013904223u;
 		return float(seed >> 8) / float(1u << 24);
 	};
-	auto hq = PainterHighQualityEnabler(p);
-	p.setPen(Qt::NoPen);
 	const auto center = moon.center();
 	const auto radius = moon.width() / 2. + 4.;
+	result.reserve(kLiveStars);
 	for (auto i = 0; i != kLiveStars; ++i) {
 		const auto point = QPointF(
 			area.x() + next() * area.width(),
@@ -313,14 +318,39 @@ void PaintLiveStars(QPainter &p, QRectF area, QRectF moon, crl::time now) {
 		const auto size = 1. + next() * 1.4;
 		const auto speed = 0.6 + next() * 1.6;
 		const auto phase = next() * 6.2832;
-		if (QLineF(point, center).length() < radius) {
-			continue;
+		if (QLineF(point, center).length() >= radius) {
+			result.push_back({ point, size, speed, phase });
 		}
-		const auto wave = 0.5 + 0.5 * std::sin(now / 1000. * speed + phase);
+	}
+	return result;
+}
+
+[[nodiscard]] QRegion LiveStarsRegion(QRectF area, QRectF moon) {
+	auto result = QRegion();
+	for (const auto &star : LiveStars(area, moon)) {
+		const auto extent = star.size + 1.5;
+		result += QRectF(
+			star.point - QPointF(extent, extent),
+			QSizeF(extent, extent) * 2).toAlignedRect();
+	}
+	return result;
+}
+
+void PaintLiveStars(QPainter &p, QRectF area, QRectF moon, crl::time now) {
+	const auto stars = LiveStars(area, moon);
+	if (stars.empty()) {
+		return;
+	}
+	const auto dark = st::windowBg->c.lightness() < 128;
+	const auto base = dark ? QColor(232, 226, 255) : QColor(122, 92, 222);
+	auto hq = PainterHighQualityEnabler(p);
+	p.setPen(Qt::NoPen);
+	for (const auto &star : stars) {
+		const auto wave = 0.5 + 0.5 * std::sin(now / 1000. * star.speed + star.phase);
 		auto color = base;
 		color.setAlphaF(0.18 + 0.62 * wave);
 		p.setBrush(color);
-		p.drawEllipse(point, size, size);
+		p.drawEllipse(star.point, star.size, star.size);
 	}
 }
 
@@ -9542,8 +9572,8 @@ void HistoryWidget::animateEmptyMoon() {
 			QPointF(kLiveMoonDegreesPerSecond * elapsed / 1000., 0.));
 	}
 	const auto moon = emptyMoonRect();
-	update(LiveStarsRect(moon, rect()).toAlignedRect().united(
-		moon.toAlignedRect()));
+	update(LiveStarsRegion(LiveStarsRect(moon, rect()), moon)
+		+ moon.toAlignedRect());
 }
 
 bool HistoryWidget::canUseEmptyMoon() const {
@@ -12005,7 +12035,9 @@ void HistoryWidget::paintEvent(QPaintEvent *e) {
 		}
 	} else {
 		const auto moon = emptyMoonRect();
-		if (clip.intersects(moon.toAlignedRect())
+		const auto moonArea = LiveStarsRect(moon, rect()).toAlignedRect().united(
+			moon.toAlignedRect());
+		if (clip.intersects(moonArea)
 			&& Core::KukagramAppearance::MoonVisible()
 			&& canUseEmptyMoon()) {
 			if (!_emptyMoon) {
