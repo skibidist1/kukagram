@@ -19,7 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "calls/calls_instance.h"
 #include "core/application.h"
 #include "core/click_handler_types.h"
-#ifdef Q_OS_MAC
+#if defined Q_OS_MAC || defined Q_OS_WIN
 #include "core/kukagram_account_groups_dialog.h"
 #include "core/kukagram_account_grid.h"
 #include "core/kukagram_appearance.h"
@@ -185,7 +185,7 @@ MainMenu::ToggleAccountsButton::ToggleAccountsButton(
 
 	auto &settings = Core::App().settings();
 	if (Core::App().domain().storedAccountsCount() < 2
-#ifdef Q_OS_MAC
+#if defined Q_OS_MAC || defined Q_OS_WIN
 		&& !Core::KukagramAccountGroups::MenuGroup().current()
 #endif // Q_OS_MAC
 		&& settings.mainMenuAccountsShown()) {
@@ -616,7 +616,7 @@ void MainMenu::setupAccounts() {
 	const auto inner = _accounts->entity();
 
 	inner->add(object_ptr<Ui::FixedHeightWidget>(inner, st::mainMenuSkip));
-#ifdef Q_OS_MAC
+#if defined Q_OS_MAC || defined Q_OS_WIN
 	using namespace Core::KukagramAccountGroups;
 	const auto actions = _inner->insert(
 		1,
@@ -663,6 +663,28 @@ void MainMenu::setupAccounts() {
 			});
 		});
 	}
+	Settings::AddButtonWithIcon(
+		actions,
+		rpl::single(u"Настройки kukagram"_q),
+		st::mainMenuButton,
+		{ &st::menuIconSettings }
+	)->setClickedCallback([=] {
+		controller->window().hideSettingsAndLayer();
+		InvokeQueued(&Core::App(), [] {
+			Core::App().showKukagramPreferences();
+		});
+	});
+	Settings::AddButtonWithIcon(
+		actions,
+		rpl::single(u"Внешний вид kukagram"_q),
+		st::mainMenuButton,
+		{ &st::menuIconPalette }
+	)->setClickedCallback([=] {
+		controller->window().hideSettingsAndLayer();
+		InvokeQueued(&Core::App(), [] {
+			Core::App().showKukagramAppearance();
+		});
+	});
 	const auto groupControls = _inner->insert(
 		2,
 		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(

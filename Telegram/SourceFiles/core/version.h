@@ -20,7 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // used in Updater.cpp and Setup.iss for Windows
 constexpr auto AppId = "{53F49750-6209-4FBF-9CA8-7A333C87D1ED}"_cs;
 constexpr auto AppNameOld = "Telegram Win (Unofficial)"_cs;
-#if defined Q_OS_MAC && !defined OS_MAC_STORE
+#if !defined OS_MAC_STORE && !defined OS_WIN_STORE
 constexpr auto AppName = "kukagram"_cs;
 #else
 constexpr auto AppName = "Telegram Desktop"_cs;

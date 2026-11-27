@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/application.h"
 #include "core/kukagram_account_groups.h"
-#ifdef Q_OS_MAC
+#if defined Q_OS_MAC || defined Q_OS_WIN
 #include "core/kukagram_account_groups_dialog.h"
 #include "core/kukagram_account_grid.h"
 #endif // Q_OS_MAC
@@ -152,7 +152,7 @@ constexpr auto kQuitPreventTimeoutMs = crl::time(1500);
 constexpr auto kAutoLockTimeoutLateMs = crl::time(3000);
 constexpr auto kClearEmojiImageSourceTimeout = 10 * crl::time(1000);
 
-#ifdef Q_OS_MAC
+#if defined Q_OS_MAC || defined Q_OS_WIN
 enum class KukagramAction : int {
 	Next,
 	Previous,
@@ -182,6 +182,14 @@ const auto kKukagramShortcutKeys = {
 
 [[nodiscard]] bool HasKukagramPhysicalKey(const KukagramShortcut &binding) {
 	return binding.physicalKeyKnown || binding.physicalKey;
+}
+
+[[nodiscard]] quint32 KukagramPhysicalKey(const QKeyEvent *event) {
+#ifdef Q_OS_WIN
+	return event->nativeScanCode();
+#else // Q_OS_WIN
+	return event->nativeVirtualKey();
+#endif // Q_OS_WIN
 }
 
 [[nodiscard]] bool HasKukagramNativeKeyData(const QKeyEvent *event) {
@@ -216,12 +224,21 @@ const auto kKukagramShortcutKeys = {
 }
 
 [[nodiscard]] KukagramShortcuts ReadKukagramShortcuts() {
+#ifdef Q_OS_WIN
+	constexpr auto kPhysicalN = quint32(0x31);
+	constexpr auto kPhysicalK = quint32(0x25);
+	constexpr auto kPhysical4 = quint32(0x05);
+#else // Q_OS_WIN
+	constexpr auto kPhysicalN = quint32(0x2D);
+	constexpr auto kPhysicalK = quint32(0x28);
+	constexpr auto kPhysical4 = quint32(0x15);
+#endif // Q_OS_WIN
 	auto result = KukagramShortcuts{ {
 		{ Qt::Key_Right, 0, Qt::ControlModifier | Qt::AltModifier, {} },
 		{ Qt::Key_Left, 0, Qt::ControlModifier | Qt::AltModifier, {} },
-		{ Qt::Key_N, 0x2D, Qt::ControlModifier | Qt::ShiftModifier, {} },
-		{ Qt::Key_K, 0x28, Qt::ControlModifier | Qt::AltModifier, {} },
-		{ Qt::Key_4, 0x15, Qt::AltModifier, {} },
+		{ Qt::Key_N, kPhysicalN, Qt::ControlModifier | Qt::ShiftModifier, {} },
+		{ Qt::Key_K, kPhysicalK, Qt::ControlModifier | Qt::AltModifier, {} },
+		{ Qt::Key_4, kPhysical4, Qt::AltModifier, {} },
 	} };
 	const auto defaults = result;
 	const auto file = KukagramShortcutFile();
@@ -298,7 +315,7 @@ KukagramShortcuts &CurrentKukagramShortcuts() {
 			!= binding.modifiers) {
 		return false;
 	}
-	const auto pressedPhysical = event->nativeVirtualKey();
+	const auto pressedPhysical = KukagramPhysicalKey(event);
 	return (HasKukagramPhysicalKey(binding) && HasKukagramNativeKeyData(event))
 		? (binding.physicalKey == pressedPhysical)
 		: (event->key() == binding.key);
@@ -352,13 +369,15 @@ protected:
 		if (!(mods & (Qt::ControlModifier | Qt::AltModifier
 				| Qt::MetaModifier))
 			&& !(key >= Qt::Key_F1 && key <= Qt::Key_F12)) {
-			setText(u"Нужен ⌘/⌥/Control + клавиша или F1–F12"_q);
+			setText(Platform::IsMac()
+				? u"Нужен ⌘/⌥/Control + клавиша или F1–F12"_q
+				: u"Нужен Ctrl/Alt/Win + клавиша или F1–F12"_q);
 			event->accept();
 			return;
 		}
 		const auto binding = KukagramShortcut{
 			.key = key,
-			.physicalKey = event->nativeVirtualKey(),
+			.physicalKey = KukagramPhysicalKey(event),
 			.modifiers = mods,
 			.label = QKeySequence(int(mods) | key
 				).toString(QKeySequence::NativeText),
@@ -489,9 +508,9 @@ void ShowKukagramNotificationAccountsDialog(not_null<Main::Domain*> domain) {
 	layout->addWidget(keyGroup);
 	auto hint = new QLabel(
 		u"Нажми кнопку сочетания, затем новые клавиши. "
-		u"На Mac запоминается физическая клавиша: русская и английская "
+		u"Запоминается физическая клавиша: русская и английская "
 		u"раскладки работают одинаково. "
-		u"Можно назначить любое сочетание, даже занятое macOS (например ⌘W): "
+		u"Можно назначить любое сочетание, даже системное (например ⌘W на Mac): "
 		u"в Kukagram оно будет переключать аккаунты. "
 		u"Чтобы получать фоновые уведомления от отмеченных аккаунтов, "
 		u"открой каждый из них один раз после запуска приложения."_q,
@@ -653,7 +672,9 @@ void ShowKukagramAppearanceDialog() {
 	auto freshLayout = new QVBoxLayout(fresh);
 	auto theme = new QCheckBox(u"Фиолетовая тема: кнопки, выделение, счётчики"_q, dialog);
 	auto liveBackground = new QCheckBox(u"Живой фон: Луна вращается, звёзды мерцают"_q, dialog);
-	auto accountGrid = new QCheckBox(u"Сетка аккаунтов в меню ☰ (⌥4)"_q, dialog);
+	auto accountGrid = new QCheckBox(Platform::IsMac()
+		? u"Сетка аккаунтов в меню ☰ (⌥4)"_q
+		: u"Сетка аккаунтов в меню ☰ (Alt+4)"_q, dialog);
 	auto switchToast = new QCheckBox(u"Подсказка при смене аккаунта"_q, dialog);
 	auto splash = new QCheckBox(u"Экран загрузки Kukagram при запуске"_q, dialog);
 	theme->setChecked(original.theme);
@@ -1005,7 +1026,7 @@ void Application::run() {
 	_domain->activeChanges(
 	) | rpl::on_next([=](not_null<Main::Account*> account) {
 		showAccount(account);
-#ifdef Q_OS_MAC
+#if defined Q_OS_MAC || defined Q_OS_WIN
 		showKukagramSwitchToast(account);
 #endif // Q_OS_MAC
 	}, _lifetime);
@@ -1250,7 +1271,7 @@ void Application::createTray() {
 }
 
 void Application::showKukagramPreferences() {
-#ifdef Q_OS_MAC
+#if defined Q_OS_MAC || defined Q_OS_WIN
 	if (!_domain || !_domain->started() || passcodeLocked() || Core::Quitting()) {
 		return;
 	}
@@ -1265,7 +1286,7 @@ void Application::showKukagramPreferences() {
 }
 
 
-#ifdef Q_OS_MAC
+#if defined Q_OS_MAC || defined Q_OS_WIN
 void Application::showKukagramSwitchToast(not_null<Main::Account*> account) {
 	static auto first = true;
 	if (base::take(first)) {
@@ -1324,7 +1345,7 @@ void Application::showKukagramSwitchToast(not_null<Main::Account*> account) {
 #endif // Q_OS_MAC
 
 void Application::showKukagramAppearance() {
-#ifdef Q_OS_MAC
+#if defined Q_OS_MAC || defined Q_OS_WIN
 	if (!_domain || !_domain->started() || passcodeLocked() || Core::Quitting()) {
 		return;
 	}
@@ -1404,7 +1425,7 @@ bool Application::eventFilter(QObject *object, QEvent *e) {
 		updateNonIdle();
 		_inAppKeyPressed.fire({});
 		const auto event = static_cast<QKeyEvent*>(e);
-#ifdef Q_OS_MAC
+#if defined Q_OS_MAC || defined Q_OS_WIN
 		if (!QApplication::activeModalWidget()
 			&& !QApplication::activePopupWidget()
 			&& _domain->started() && !passcodeLocked()) {
@@ -1456,7 +1477,7 @@ bool Application::eventFilter(QObject *object, QEvent *e) {
 	} break;
 
 	case QEvent::ShortcutOverride: {
-#ifdef Q_OS_MAC
+#if defined Q_OS_MAC || defined Q_OS_WIN
 		if (_domain->started() && !passcodeLocked()
 			&& !QApplication::activeModalWidget()
 			&& !QApplication::activePopupWidget()) {

@@ -57,7 +57,7 @@ constexpr auto kRetirementRetryDelay = crl::time(1000);
 constexpr auto kBlockedRetirementRetryDelay = crl::time(10000);
 
 [[nodiscard]] QString NotificationPolicyFile() {
-#ifdef Q_OS_MAC
+#if defined Q_OS_MAC || defined Q_OS_WIN
 	return cWorkingDir() + u"notification-accounts.ini"_q;
 #else
 	return QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
