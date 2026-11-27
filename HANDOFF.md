@@ -127,7 +127,6 @@ the message field, favorites, switching between the last two accounts,
 local notes and a clearer background-activity screen. These are proposals;
 the user has not selected one for implementation.
 
-
 ## Account search and group menu
 
 - The top of ☰ now has «Группы аккаунтов» and «Поиск аккаунта».
@@ -245,9 +244,7 @@ Problems already solved, keep these settings:
 ## Observed in the installed app (not fixed yet)
 
 - Installed build is DEBUG (unoptimized).
-- "Next account" was bound to ⌘W in the installed version. The current source
-  rejects this conflict, but the fix has not been installed or tested with
-  real account switching.
+- The user switches accounts with ⌘W/⌘E on purpose; see the hotkeys section.
 - Cancel/Save buttons are English in Russian dialogs; the menu footer says
   "Telegram Desktop"; the Moon toggle is only reachable by a right click on an
   empty chat; Kukagram menu items sit below the full account list.
