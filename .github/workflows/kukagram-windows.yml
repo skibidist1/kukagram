@@ -29,6 +29,38 @@ jobs:
       - name: Keep line endings.
         run: git config --global core.autocrlf false
 
+      - name: Free disk space.
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+          Get-PSDrive C, D | Format-Table Name, @{ n = 'FreeGB'; e = { [math]::Round($_.Free / 1GB, 1) } }
+          $dirs = @(
+            'C:\Android',
+            'C:\ghcup',
+            'C:\Miniconda',
+            'C:\Strawberry',
+            'C:\Julia',
+            'C:\SeleniumWebDrivers',
+            'C:\tools\php',
+            'C:\msys64',
+            'C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk',
+            'C:\hostedtoolcache\windows\go',
+            'C:\hostedtoolcache\windows\Ruby',
+            'C:\hostedtoolcache\windows\PyPy',
+            'C:\hostedtoolcache\windows\CodeQL',
+            'C:\Program Files\MongoDB',
+            'C:\Program Files\PostgreSQL',
+            'C:\Program Files\MySQL',
+            'C:\Program Files\R',
+            'C:\Program Files\Microsoft SQL Server',
+            'C:\Program Files (x86)\Microsoft SQL Server',
+            'C:\Program Files (x86)\Android'
+          )
+          foreach ($dir in $dirs) {
+            if (Test-Path $dir) { cmd /c "rmdir /s /q `"$dir`"" }
+          }
+          Get-PSDrive C, D | Format-Table Name, @{ n = 'FreeGB'; e = { [math]::Round($_.Free / 1GB, 1) } }
+
       - name: Prepare directories.
         run: |
           mkdir %userprofile%\TBuild\Libraries
