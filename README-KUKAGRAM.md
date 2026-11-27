@@ -47,6 +47,16 @@ credentials unless configured with the local private API file. When switching
 an existing build to private credentials, reconfigure with
 `-C ../kukagram-build/api-private.cmake -DTDESKTOP_API_TEST=OFF` before rebuilding.
 
+## History rewrite (2026-11-27)
+
+The Kukagram commits on `kukagram` were rewritten to remove personal data
+from old notes and author names, and force-pushed. The code is identical.
+`~/Developer/kukagram` is already up to date. Any other clone must be
+re-cloned, not pulled. Commits in this repository use the local identity
+`kukagram <kukagram@localhost>` (set in `.git/config`); keep it that way.
+The repository is public: never commit account names, phone numbers,
+sessions or API credentials.
+
 ## Working rules (Claude and Codex)
 
 This project is worked on by both Claude and Codex. Every agent follows these
