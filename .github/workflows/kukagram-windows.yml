@@ -88,20 +88,24 @@ jobs:
         with:
           path: ${{ env.TBUILD }}\ThirdParty
           key: kukagram-win-third-party-${{ env.CACHE_KEY }}-${{ github.run_id }}
-          restore-keys: kukagram-win-third-party-${{ env.CACHE_KEY }}-
+          restore-keys: |
+            kukagram-win-third-party-${{ env.CACHE_KEY }}-
+            kukagram-win-third-party-
 
       - name: Restore Libraries cache.
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.LibrariesPath }}
           key: kukagram-win-libs-${{ env.CACHE_KEY }}-${{ github.run_id }}
-          restore-keys: kukagram-win-libs-${{ env.CACHE_KEY }}-
+          restore-keys: |
+            kukagram-win-libs-${{ env.CACHE_KEY }}-
+            kukagram-win-libs-
 
       - name: Libraries.
         id: libraries
         timeout-minutes: 290
         run: |
-          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent qt6
+          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent qt6 skip-crash-reports
 
       - name: Free up some disk space.
         if: always()
