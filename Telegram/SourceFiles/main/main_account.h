@@ -29,6 +29,8 @@ class Session;
 class SessionSettings;
 class AppConfig;
 
+[[nodiscard]] QString ComposeDataString(const QString &dataName, int index);
+
 class Account final : public base::has_weak_ptr {
 public:
 	Account(not_null<Domain*> domain, const QString &dataName, int index);

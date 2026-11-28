@@ -20,6 +20,20 @@ state and the next steps.
   switching once per selection and closing the grid on lock passed.
   Rerun with `python3 ../kukagram-build/checks.noindex/account-grid/run.py`.
 
+## Clear cache for all accounts (2026-11-28, Claude)
+
+- ☰ «Очистить кэш всех аккаунтов» opens `core/kukagram_cache_cleanup.h`.
+  It shows the total size of `tdata/user_<data name>/cache` and
+  `media_cache` for every stored account, then clears loaded accounts
+  through their cache databases and deletes those two folders for accounts
+  that are not loaded. Paths come from `Main::Domain::accountCacheFolders()`
+  and are checked by `IsAccountCacheFolder()` before deletion; keys,
+  sessions and mini app storage (`wvbots`, `wvother`) are never touched.
+- Account switching and retirement are blocked while it runs
+  (`Domain::setClearingAccountCaches`).
+- Built, smoke-tested on a portable profile and installed. Not yet run on
+  the real profile; the user's caches were 1.8 GB before.
+
 ## GitHub (2026-11-28, Claude)
 
 - The repository is public. Never commit personal data or API credentials.

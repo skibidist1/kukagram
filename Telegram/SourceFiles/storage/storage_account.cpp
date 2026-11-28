@@ -2093,6 +2093,10 @@ EncryptionKey Account::cacheBigFileKey() const {
 	return cacheKey();
 }
 
+QString Account::DatabasePathFor(const QString &dataName) {
+	return ComputeDatabasePath(dataName);
+}
+
 QString Account::cachePath() const {
 	Expects(!_databasePath.isEmpty());
 

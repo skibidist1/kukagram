@@ -365,7 +365,7 @@ int Domain::storedAccountsCount() const {
 
 bool Domain::cycleStoredAccount(int direction) {
 	if (!started() || !direction || _switchingStored || _resettingStored
-		|| _retiringInactiveAccounts || Core::Quitting()
+		|| _retiringInactiveAccounts || _clearingCaches || Core::Quitting()
 		|| Core::App().passcodeLocked()) {
 		return false;
 	}
@@ -388,6 +388,46 @@ bool Domain::cycleStoredAccount(int direction) {
 			+ int(available.size())) % int(available.size());
 	activateStored(available[index]);
 	return true;
+}
+
+bool Domain::canClearAccountCaches() const {
+	return started()
+		&& !_switchingStored
+		&& !_resettingStored
+		&& !_retiringInactiveAccounts
+		&& !_clearingCaches
+		&& !Core::Quitting();
+}
+
+std::vector<QString> Domain::accountCacheFolders(bool unloadedOnly) const {
+	auto result = std::vector<QString>();
+	for (const auto &stored : storedAccounts()) {
+		const auto loaded = ranges::contains(
+			_accounts,
+			stored.index,
+			&AccountWithIndex::index);
+		if (unloadedOnly && loaded) {
+			continue;
+		}
+		const auto base = Storage::Account::DatabasePathFor(
+			ComposeDataString(_dataName, stored.index));
+		result.push_back(base + u"cache"_q);
+		result.push_back(base + u"media_cache"_q);
+	}
+	return result;
+}
+
+void Domain::clearLoadedAccountCaches() {
+	for (const auto &[index, account] : _accounts) {
+		if (const auto session = account->maybeSession()) {
+			session->data().cache().clear();
+			session->data().cacheBigFile().clear();
+		}
+	}
+}
+
+void Domain::setClearingAccountCaches(bool clearing) {
+	_clearingCaches = clearing;
 }
 
 bool Domain::notificationsAllowed(uint64 sessionId) const {
@@ -565,7 +605,7 @@ bool Domain::canRetireAccount(not_null<Account*> account) const {
 void Domain::retireInactiveAccounts(crl::time retryDelay) {
 	_retirementTimer.cancel();
 	if (!started() || Core::Quitting() || _resettingStored
-		|| _switchingStored || _retiringInactiveAccounts
+		|| _switchingStored || _retiringInactiveAccounts || _clearingCaches
 		|| !_active.current() || !_active.current()->sessionExists()) {
 		return;
 	}
@@ -634,7 +674,7 @@ void Domain::activateStored(
 		QString startUrl,
 		int discardPendingIndex,
 		bool newWindow) {
-	if (_switchingStored || _resettingStored
+	if (_switchingStored || _resettingStored || _clearingCaches
 		|| _retiringInactiveAccounts || Core::Quitting()
 		|| Core::App().passcodeLocked()) {
 		return;
@@ -651,7 +691,7 @@ void Domain::activateStored(
 	}
 	const auto targetId = target->uniqueId;
 	auto invoke = crl::guard(this, [=] {
-		if (_switchingStored || _resettingStored
+		if (_switchingStored || _resettingStored || _clearingCaches
 			|| _retiringInactiveAccounts || Core::Quitting()
 			|| Core::App().passcodeLocked()) {
 			return;

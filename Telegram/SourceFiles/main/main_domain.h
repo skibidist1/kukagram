@@ -102,6 +102,11 @@ public:
 	[[nodiscard]] int storedAccountsCount() const;
 	// Cycle through signed-in, including cold-stored, accounts in menu order.
 	bool cycleStoredAccount(int direction);
+	[[nodiscard]] bool canClearAccountCaches() const;
+	[[nodiscard]] std::vector<QString> accountCacheFolders(
+		bool unloadedOnly) const;
+	void clearLoadedAccountCaches();
+	void setClearingAccountCaches(bool clearing);
 	// Local, per-account notification allowlist; defaults to all allowed.
 	[[nodiscard]] bool notificationsAllowed(uint64 sessionId) const;
 	[[nodiscard]] bool notificationAllowlistConfigured() const {
@@ -197,6 +202,7 @@ private:
 	bool _switchingStored = false;
 	bool _resettingStored = false;
 	bool _retiringInactiveAccounts = false;
+	bool _clearingCaches = false;
 	base::Timer _retirementTimer;
 	std::vector<int> _pendingAccounts;
 	rpl::event_stream<> _accountsChanges;

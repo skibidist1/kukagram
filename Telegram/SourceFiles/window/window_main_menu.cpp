@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #if defined Q_OS_MAC || defined Q_OS_WIN
 #include "core/kukagram_account_groups_dialog.h"
 #include "core/kukagram_account_grid.h"
+#include "core/kukagram_cache_cleanup.h"
 #include "core/kukagram_appearance.h"
 #include "mainwindow.h"
 #endif
@@ -672,6 +673,17 @@ void MainMenu::setupAccounts() {
 		controller->window().hideSettingsAndLayer();
 		InvokeQueued(&Core::App(), [] {
 			Core::App().showKukagramPreferences();
+		});
+	});
+	Settings::AddButtonWithIcon(
+		actions,
+		rpl::single(u"Очистить кэш всех аккаунтов"_q),
+		st::mainMenuButton,
+		{ &st::menuIconClear }
+	)->setClickedCallback([=] {
+		controller->window().hideSettingsAndLayer();
+		InvokeQueued(&Core::App(), [] {
+			Core::ShowKukagramCacheCleanup();
 		});
 	});
 	Settings::AddButtonWithIcon(

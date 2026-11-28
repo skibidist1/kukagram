@@ -137,6 +137,7 @@ public:
 
 	[[nodiscard]] EncryptionKey cacheBigFileKey() const;
 	[[nodiscard]] QString cacheBigFilePath() const;
+	[[nodiscard]] static QString DatabasePathFor(const QString &dataName);
 	[[nodiscard]] Cache::Database::Settings cacheBigFileSettings() const;
 
 	void writeInstalledStickers();

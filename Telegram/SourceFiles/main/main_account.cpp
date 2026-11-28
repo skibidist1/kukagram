@@ -34,7 +34,9 @@ namespace {
 
 constexpr auto kWideIdsTag = ~uint64(0);
 
-[[nodiscard]] QString ComposeDataString(const QString &dataName, int index) {
+} // namespace
+
+QString ComposeDataString(const QString &dataName, int index) {
 	auto result = dataName;
 	result.replace('#', QString());
 	if (index > 0) {
@@ -42,8 +44,6 @@ constexpr auto kWideIdsTag = ~uint64(0);
 	}
 	return result;
 }
-
-} // namespace
 
 Account::Account(not_null<Domain*> domain, const QString &dataName, int index)
 : _domain(domain)
