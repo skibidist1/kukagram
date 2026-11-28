@@ -13,6 +13,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #endif // Q_OS_MAC
 #include "core/kukagram_theme.h"
 #include "core/kukagram_splash.h"
+#include "core/kukagram_snow.h"
+#include "core/kukagram_switch_fade.h"
 #include "core/kukagram_appearance.h"
 #include "ui/chat/studio_paint.h"
 #include "ui/text/format_values.h"
@@ -128,6 +130,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QFileInfo>
 #include <QtCore/QSettings>
 #include <QtWidgets/QFormLayout>
+#include <QtWidgets/QComboBox>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QCheckBox>
@@ -697,6 +700,38 @@ void ShowKukagramAppearanceDialog() {
 		}
 	});
 	layout->addWidget(fresh);
+
+	auto space = new QGroupBox(u"Космос и эффекты"_q, dialog);
+	auto spaceLayout = new QVBoxLayout(space);
+	auto planetRow = new QHBoxLayout();
+	planetRow->addWidget(new QLabel(u"Планета на пустом экране:"_q, dialog));
+	auto planet = new QComboBox(dialog);
+	planet->addItems({ u"Луна"_q, u"Земля"_q, u"Марс"_q, u"Сатурн"_q });
+	planet->setCurrentIndex(std::clamp(original.planet, 0, 3));
+	planetRow->addWidget(planet, 1);
+	spaceLayout->addLayout(planetRow);
+	auto meteors = new QCheckBox(u"Падающие звёзды"_q, dialog);
+	auto nebula = new QCheckBox(u"Переливающаяся туманность на пустом экране"_q, dialog);
+	auto snow = new QCheckBox(u"Снег поверх окна"_q, dialog);
+	auto glowBubbles = new QCheckBox(u"Градиентные пузыри со свечением"_q, dialog);
+	auto switchFade = new QCheckBox(u"Плавный переход при смене аккаунта"_q, dialog);
+	meteors->setChecked(original.meteors);
+	nebula->setChecked(original.nebula);
+	snow->setChecked(original.snow);
+	glowBubbles->setChecked(original.glowBubbles);
+	switchFade->setChecked(original.switchFade);
+	for (auto checkbox : { meteors, nebula, snow, glowBubbles, switchFade }) {
+		spaceLayout->addWidget(checkbox);
+	}
+	auto spaceOff = new QPushButton(u"Вернуть как было (выключить эти эффекты)"_q, dialog);
+	spaceLayout->addWidget(spaceOff);
+	QObject::connect(spaceOff, &QPushButton::clicked, dialog, [=] {
+		planet->setCurrentIndex(0);
+		for (auto checkbox : { meteors, nebula, snow, glowBubbles, switchFade }) {
+			checkbox->setChecked(false);
+		}
+	});
+	layout->addWidget(space);
 	auto row = new QHBoxLayout();
 	auto allOff = new QPushButton(u"Выключить всё"_q, dialog);
 	auto allOn = new QPushButton(u"Включить всё"_q, dialog);
@@ -705,13 +740,15 @@ void ShowKukagramAppearanceDialog() {
 	layout->addLayout(row);
 	QObject::connect(allOff, &QPushButton::clicked, dialog, [=] {
 		for (auto checkbox : { studio, colors, bubbles, animations, avatar,
-				theme, liveBackground, accountGrid, switchToast, splash }) {
+				theme, liveBackground, accountGrid, switchToast, splash,
+				meteors, nebula, snow, glowBubbles, switchFade }) {
 			checkbox->setChecked(false);
 		}
 	});
 	QObject::connect(allOn, &QPushButton::clicked, dialog, [=] {
 		for (auto checkbox : { studio, colors, bubbles, animations, avatar,
-				theme, liveBackground, accountGrid, switchToast, splash }) {
+				theme, liveBackground, accountGrid, switchToast, splash,
+				meteors, nebula, snow, glowBubbles, switchFade }) {
 			checkbox->setChecked(true);
 		}
 	});
@@ -737,6 +774,12 @@ void ShowKukagramAppearanceDialog() {
 		values.accountGrid = accountGrid->isChecked();
 		values.switchToast = switchToast->isChecked();
 		values.splash = splash->isChecked();
+		values.planet = planet->currentIndex();
+		values.meteors = meteors->isChecked();
+		values.nebula = nebula->isChecked();
+		values.snow = snow->isChecked();
+		values.glowBubbles = glowBubbles->isChecked();
+		values.switchFade = switchFade->isChecked();
 		if (!KukagramAppearance::Save(values)) {
 			ShowKukagramWarning(dialog,
 				u"Не удалось сохранить внешний вид."_q);
@@ -1035,6 +1078,12 @@ void Application::run() {
 #endif // Q_OS_MAC
 	}, _lifetime);
 	KukagramTheme::Start();
+	_domain->beforeActiveChange(
+	) | rpl::on_next([=] {
+		if (const auto window = activePrimaryWindow()) {
+			ShowKukagramSwitchFade(window->widget()->bodyWidget());
+		}
+	}, _lifetime);
 
 	QCoreApplication::instance()->installEventFilter(this);
 
@@ -1059,6 +1108,7 @@ void Application::run() {
 	DEBUG_LOG(("Application Info: showing."));
 	_lastActivePrimaryWindow->finishFirstShow();
 	ShowKukagramSplash(_lastActivePrimaryWindow->widget()->bodyWidget());
+	StartKukagramSnow(_lastActivePrimaryWindow->widget().get());
 
 	if (!_lastActivePrimaryWindow->locked() && cStartToSettings()) {
 		_lastActivePrimaryWindow->showSettings();

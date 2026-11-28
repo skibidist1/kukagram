@@ -13,6 +13,7 @@ No session data, Telegram themes or upstream settings are modified.
 #include <QtCore/QThread>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QWidget>
+#include <algorithm>
 #include <atomic>
 
 #include "settings.h"
@@ -31,6 +32,12 @@ struct Values {
 	bool accountGrid = true;
 	bool switchToast = true;
 	bool splash = true;
+	int planet = 0;
+	bool meteors = true;
+	bool nebula = true;
+	bool snow = true;
+	bool glowBubbles = true;
+	bool switchFade = true;
 	bool operator==(const Values &) const = default;
 };
 
@@ -38,7 +45,7 @@ inline QString SettingsFile() {
 	return cWorkingDir() + u"appearance.ini"_q;
 }
 
-inline unsigned short Encode(const Values &values) {
+inline quint32 Encode(const Values &values) {
 	return (values.colors ? 1 : 0)
 		| (values.bubbles ? 2 : 0)
 		| (values.animations ? 4 : 0)
@@ -49,11 +56,17 @@ inline unsigned short Encode(const Values &values) {
 		| (values.liveBackground ? 128 : 0)
 		| (values.accountGrid ? 256 : 0)
 		| (values.switchToast ? 512 : 0)
-		| (values.splash ? 1024 : 0);
+		| (values.splash ? 1024 : 0)
+		| (values.meteors ? 2048 : 0)
+		| (values.nebula ? 4096 : 0)
+		| (values.snow ? 8192 : 0)
+		| (values.glowBubbles ? 16384 : 0)
+		| (values.switchFade ? 32768 : 0)
+		| (quint32(std::clamp(values.planet, 0, 3)) << 16);
 }
 
-inline std::atomic<unsigned short> &StoredFlags() {
-	static auto flags = std::atomic<unsigned short>([] {
+inline std::atomic<quint32> &StoredFlags() {
+	static auto flags = std::atomic<quint32>([] {
 		const auto settings = QSettings(SettingsFile(), QSettings::IniFormat);
 		return Encode(Values{
 			settings.value(QStringLiteral("colors"), false).toBool(),
@@ -67,6 +80,12 @@ inline std::atomic<unsigned short> &StoredFlags() {
 			settings.value(QStringLiteral("accountGrid"), true).toBool(),
 			settings.value(QStringLiteral("switchToast"), true).toBool(),
 			settings.value(QStringLiteral("splash"), true).toBool(),
+			settings.value(QStringLiteral("planet"), 0).toInt(),
+			settings.value(QStringLiteral("meteors"), true).toBool(),
+			settings.value(QStringLiteral("nebula"), true).toBool(),
+			settings.value(QStringLiteral("snow"), true).toBool(),
+			settings.value(QStringLiteral("glowBubbles"), true).toBool(),
+			settings.value(QStringLiteral("switchFade"), true).toBool(),
 		});
 	}());
 	return flags;
@@ -79,6 +98,9 @@ inline Values Current() {
 		bool(bits & 4), bool(bits & 8), bool(bits & 16),
 		bool(bits & 32), bool(bits & 64), bool(bits & 128),
 		bool(bits & 256), bool(bits & 512), bool(bits & 1024),
+		int((bits >> 16) & 3),
+		bool(bits & 2048), bool(bits & 4096), bool(bits & 8192),
+		bool(bits & 16384), bool(bits & 32768),
 	};
 }
 
@@ -116,6 +138,12 @@ inline bool Save(const Values &values) {
 	settings.setValue(QStringLiteral("accountGrid"), values.accountGrid);
 	settings.setValue(QStringLiteral("switchToast"), values.switchToast);
 	settings.setValue(QStringLiteral("splash"), values.splash);
+	settings.setValue(QStringLiteral("planet"), values.planet);
+	settings.setValue(QStringLiteral("meteors"), values.meteors);
+	settings.setValue(QStringLiteral("nebula"), values.nebula);
+	settings.setValue(QStringLiteral("snow"), values.snow);
+	settings.setValue(QStringLiteral("glowBubbles"), values.glowBubbles);
+	settings.setValue(QStringLiteral("switchFade"), values.switchFade);
 	settings.sync();
 	if (settings.status() != QSettings::NoError) {
 		return false;

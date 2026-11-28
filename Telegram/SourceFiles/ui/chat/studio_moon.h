@@ -8,6 +8,7 @@
 #include <QtCore/QTimer>
 #include <QtGui/QImage>
 #include <QtGui/QPainter>
+#include <QtGui/QPainterPath>
 
 #include <algorithm>
 #include <array>
@@ -16,9 +17,163 @@
 #include <vector>
 
 namespace Ui::Studio {
+namespace PlanetTextures {
+
+[[nodiscard]] inline float Hash(int x, int y, int seed) {
+	auto h = quint32(x) * 374761393u
+		+ quint32(y) * 668265263u
+		+ quint32(seed) * 2246822519u;
+	h = (h ^ (h >> 13)) * 1274126177u;
+	h ^= h >> 16;
+	return float(h & 0xFFFFFF) / float(0x1000000);
+}
+
+[[nodiscard]] inline float Smooth(float t) {
+	return t * t * (3.f - 2.f * t);
+}
+
+[[nodiscard]] inline float ValueNoise(float x, float y, int period, int seed) {
+	const auto xi = int(std::floor(x));
+	const auto yi = int(std::floor(y));
+	const auto fx = Smooth(x - xi);
+	const auto fy = Smooth(y - yi);
+	const auto wrap = [&](int value) {
+		const auto result = value % period;
+		return (result < 0) ? (result + period) : result;
+	};
+	const auto x0 = wrap(xi);
+	const auto x1 = wrap(xi + 1);
+	const auto a = Hash(x0, yi, seed);
+	const auto b = Hash(x1, yi, seed);
+	const auto c = Hash(x0, yi + 1, seed);
+	const auto d = Hash(x1, yi + 1, seed);
+	return (a + (b - a) * fx) + ((c + (d - c) * fx) - (a + (b - a) * fx)) * fy;
+}
+
+[[nodiscard]] inline float Fbm(
+		float u,
+		float v,
+		int frequencyX,
+		int frequencyY,
+		int octaves,
+		int seed) {
+	auto result = 0.f;
+	auto amplitude = .5f;
+	auto total = 0.f;
+	for (auto octave = 0; octave != octaves; ++octave) {
+		const auto scale = 1 << octave;
+		result += amplitude * ValueNoise(
+			u * frequencyX * scale,
+			v * frequencyY * scale,
+			frequencyX * scale,
+			seed + octave * 101);
+		total += amplitude;
+		amplitude *= .5f;
+	}
+	return result / total;
+}
+
+[[nodiscard]] inline QRgb Mix(QRgb a, QRgb b, float t) {
+	t = std::clamp(t, 0.f, 1.f);
+	const auto channel = [&](int x, int y) {
+		return std::clamp(int(base::SafeRound(x + (y - x) * t)), 0, 255);
+	};
+	return qRgb(
+		channel(qRed(a), qRed(b)),
+		channel(qGreen(a), qGreen(b)),
+		channel(qBlue(a), qBlue(b)));
+}
+
+template <typename Callback>
+[[nodiscard]] QImage Generate(Callback &&pixel) {
+	constexpr auto kWidth = 1024;
+	constexpr auto kHeight = 512;
+	auto result = QImage(kWidth, kHeight, QImage::Format_RGB32);
+	for (auto y = 0; y != kHeight; ++y) {
+		const auto v = (y + .5f) / kHeight;
+		const auto polar = std::abs(v - .5f) * 2.f;
+		const auto line = reinterpret_cast<QRgb*>(result.scanLine(y));
+		for (auto x = 0; x != kWidth; ++x) {
+			line[x] = pixel((x + .5f) / kWidth, v, polar);
+		}
+	}
+	return result;
+}
+
+[[nodiscard]] inline QImage Earth() {
+	return Generate([](float u, float v, float polar) {
+		constexpr auto kSea = .53f;
+		const auto continent = Fbm(u, v, 6, 3, 6, 11);
+		const auto detail = Fbm(u, v, 24, 12, 3, 23);
+		const auto cloud = Fbm(u, v, 10, 5, 5, 37);
+		auto color = QRgb();
+		if (continent > kSea) {
+			const auto height = (continent - kSea) / (1.f - kSea);
+			const auto dry = Fbm(u, v, 4, 2, 3, 51);
+			color = Mix(qRgb(46, 104, 46), qRgb(122, 124, 64), (dry - .4f) * 3.f);
+			color = Mix(color, qRgb(132, 106, 74), height * 2.2f - .4f);
+			color = Mix(color, qRgb(24, 70, 30), (detail - .5f) * .8f);
+			if (polar > .82f - detail * .08f) {
+				color = qRgb(236, 240, 246);
+			}
+		} else {
+			const auto depth = (kSea - continent) / kSea;
+			color = Mix(qRgb(34, 98, 176), qRgb(8, 30, 92), depth * 3.f);
+			if (polar > .9f - detail * .05f) {
+				color = qRgb(226, 234, 244);
+			}
+		}
+		return Mix(color, qRgb(250, 251, 255), (cloud - .55f) * 2.6f);
+	});
+}
+
+[[nodiscard]] inline QImage Mars() {
+	return Generate([](float u, float v, float polar) {
+		const auto base = Fbm(u, v, 6, 3, 6, 71);
+		const auto dark = Fbm(u, v, 4, 2, 4, 83);
+		const auto detail = Fbm(u, v, 32, 16, 3, 89);
+		auto color = Mix(qRgb(204, 116, 72), qRgb(146, 78, 50), base * 1.6f - .3f);
+		color = Mix(color, qRgb(92, 52, 38), (dark - .58f) * 4.f);
+		color = Mix(color, qRgb(118, 66, 44), (detail - .5f) * .7f);
+		if (polar > .9f - detail * .06f) {
+			color = Mix(color, qRgb(236, 228, 220), .9f);
+		}
+		return color;
+	});
+}
+
+[[nodiscard]] inline QImage Saturn() {
+	return Generate([](float u, float v, float polar) {
+		constexpr auto kPi = std::numbers::pi_v<float>;
+		const auto swirl = Fbm(u, v, 8, 16, 4, 97);
+		const auto fine = std::sin((v + (swirl - .5f) * .03f) * kPi * 28.f);
+		const auto broad = std::sin(v * kPi * 7.f + swirl * 1.5f);
+		auto color = Mix(qRgb(226, 206, 160), qRgb(200, 168, 118), broad * .5f + .5f);
+		color = Mix(color, qRgb(172, 140, 100), fine * .35f + .1f);
+		return Mix(color, qRgb(150, 142, 124), (polar - .82f) * 5.f);
+	});
+}
+
+} // namespace PlanetTextures
 
 class Moon final {
 public:
+	enum class Planet {
+		Moon,
+		Earth,
+		Mars,
+		Saturn,
+	};
+
+	void setPlanet(int planet) {
+		const auto value = Planet(std::clamp(planet, 0, 3));
+		if (_planet != value) {
+			_planet = value;
+			_geometry = Geometry();
+			_dirty = true;
+		}
+	}
+
 	[[nodiscard]] static bool available() {
 		static const auto exists = QFile::exists(TexturePath());
 		return exists && !CachedTexture().failed;
@@ -40,9 +195,16 @@ public:
 		}
 	}
 
-	void paint(QPainter &painter, const QRectF &bounds) {
-		if (bounds.isEmpty() || !available()) {
+	void paint(QPainter &painter, const QRectF &full) {
+		if (full.isEmpty() || !available()) {
 			return;
+		}
+		const auto saturn = (_planet == Planet::Saturn);
+		auto bounds = full;
+		if (saturn) {
+			const auto side = full.width() * .42;
+			bounds = QRectF(0., 0., side, side);
+			bounds.moveCenter(full.center());
 		}
 		constexpr auto kMaxFramePixels = 640.;
 		const auto diameter = std::min(bounds.width(), bounds.height());
@@ -66,11 +228,106 @@ public:
 			side);
 		painter.save();
 		painter.setRenderHint(QPainter::SmoothPixmapTransform);
+		painter.setRenderHint(QPainter::Antialiasing);
+		if (saturn) {
+			paintRings(painter, target, true);
+		} else if (_planet == Planet::Earth || _planet == Planet::Mars) {
+			paintHalo(painter, target);
+		}
 		painter.drawImage(target, _frame);
+		if (saturn) {
+			paintRings(painter, target, false);
+		}
 		painter.restore();
 	}
 
 private:
+	void paintHalo(QPainter &painter, const QRectF &sphere) const {
+		const auto radius = sphere.width() / 2.;
+		const auto outer = radius * 1.1;
+		auto color = (_planet == Planet::Earth)
+			? QColor(96, 168, 255)
+			: QColor(240, 150, 100);
+		auto gradient = QRadialGradient(sphere.center(), outer);
+		color.setAlpha(0);
+		gradient.setColorAt(.86, color);
+		color.setAlpha((_planet == Planet::Earth) ? 120 : 60);
+		gradient.setColorAt(.9, color);
+		color.setAlpha(0);
+		gradient.setColorAt(1., color);
+		painter.setPen(Qt::NoPen);
+		painter.setBrush(gradient);
+		painter.drawEllipse(sphere.center(), outer, outer);
+	}
+
+	void paintRings(
+			QPainter &painter,
+			const QRectF &sphere,
+			bool back) const {
+		struct Band {
+			qreal inner = 0.;
+			qreal outer = 0.;
+			QColor color;
+		};
+		const auto bands = std::array<Band, 4>{ {
+			{ 1.22, 1.48, QColor(170, 150, 120, 70) },
+			{ 1.5, 1.94, QColor(222, 204, 166, 200) },
+			{ 2.0, 2.22, QColor(200, 182, 148, 160) },
+			{ 2.25, 2.3, QColor(190, 176, 150, 70) },
+		} };
+		constexpr auto kTilt = .3;
+		const auto radius = sphere.width() / 2.;
+		painter.save();
+		painter.translate(sphere.center());
+		painter.rotate(-16.);
+		const auto limit = radius * 2.4;
+		painter.setClipRect(back
+			? QRectF(-limit, -limit, limit * 2., limit)
+			: QRectF(-limit, 0., limit * 2., limit));
+		painter.setPen(Qt::NoPen);
+		for (const auto &band : bands) {
+			auto path = QPainterPath();
+			path.setFillRule(Qt::OddEvenFill);
+			path.addEllipse(
+				QPointF(),
+				radius * band.outer,
+				radius * band.outer * kTilt);
+			path.addEllipse(
+				QPointF(),
+				radius * band.inner,
+				radius * band.inner * kTilt);
+			painter.setBrush(band.color);
+			painter.drawPath(path);
+		}
+		painter.restore();
+	}
+
+	[[nodiscard]] std::array<float, 6> tint() const {
+		switch (_planet) {
+		case Planet::Earth: return { 1.f, 1.f, 1.03f, 2.f, 3.f, 6.f };
+		case Planet::Mars: return { 1.03f, .98f, .95f, 3.f, 2.f, 2.f };
+		case Planet::Saturn: return { 1.f, .99f, .96f, 3.f, 3.f, 2.f };
+		case Planet::Moon: break;
+		}
+		return { .94f, .98f, 1.05f, 3.f, 4.f, 8.f };
+	}
+
+	[[nodiscard]] const QImage &texture() const {
+		if (_planet == Planet::Moon) {
+			return Texture();
+		}
+		static auto generated = std::array<QImage, 3>();
+		const auto index = int(_planet) - 1;
+		if (generated[index].isNull()) {
+			generated[index] = (_planet == Planet::Earth)
+				? PlanetTextures::Earth()
+				: (_planet == Planet::Mars)
+				? PlanetTextures::Mars()
+				: PlanetTextures::Saturn();
+		}
+		return generated[index];
+	}
+
 	struct TextureCache {
 		QImage image;
 		qint64 used = 0;
@@ -156,6 +413,7 @@ private:
 		const auto weight = [](float value) {
 			return quint16(std::clamp(base::SafeRound(value * 256.), 0., 65535.));
 		};
+		const auto gains = tint();
 		_geometry.pixels = pixels;
 		_geometry.latitude = _latitude;
 		_geometry.texture = texture.size();
@@ -190,9 +448,9 @@ private:
 					.bottom = quint32(std::min(top + 1, height - 1)) * textureStride,
 					.x = std::min(fixed(x), (quint32(width) << 16) - 1),
 					.shade = {
-						weight(shade * .94f),
-						weight(shade * .98f),
-						weight(shade * 1.05f),
+						weight(shade * gains[0]),
+						weight(shade * gains[1]),
+						weight(shade * gains[2]),
 					},
 					.fy = quint8(std::clamp(
 						int(base::SafeRound((y - top) * 256.)),
@@ -214,11 +472,15 @@ private:
 	}
 
 	void render(int pixels) {
-		const auto &texture = Texture();
+		const auto &texture = this->texture();
 		if (texture.isNull()) {
 			return;
 		}
 		prepareGeometry(pixels, texture);
+		const auto shades = tint();
+		const auto offsetR = quint32(shades[3]);
+		const auto offsetG = quint32(shades[4]);
+		const auto offsetB = quint32(shades[5]);
 		if (_frame.width() != pixels
 			|| _frame.format() != QImage::Format_ARGB32_Premultiplied) {
 			_frame = QImage(pixels, pixels, QImage::Format_ARGB32_Premultiplied);
@@ -253,9 +515,9 @@ private:
 				Mix(upper[left], upper[right], fx),
 				Mix(lower[left], lower[right], fx),
 				texel.fy);
-			const auto r = clamp((color >> 16) & 0xFF, texel.shade[0], 3);
-			const auto g = clamp((color >> 8) & 0xFF, texel.shade[1], 4);
-			const auto b = clamp(color & 0xFF, texel.shade[2], 8);
+			const auto r = clamp((color >> 16) & 0xFF, texel.shade[0], offsetR);
+			const auto g = clamp((color >> 8) & 0xFF, texel.shade[1], offsetG);
+			const auto b = clamp(color & 0xFF, texel.shade[2], offsetB);
 			target[texel.target] = (texel.alpha == 255)
 				? (0xFF000000u | (r << 16) | (g << 8) | b)
 				: qPremultiply(qRgba(int(r), int(g), int(b), texel.alpha));
@@ -264,6 +526,7 @@ private:
 
 	Geometry _geometry;
 	QImage _frame;
+	Planet _planet = Planet::Moon;
 	qreal _longitude = 0.;
 	qreal _latitude = 0.;
 	bool _dirty = true;

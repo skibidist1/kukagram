@@ -449,7 +449,18 @@ void PaintStudioEdge(
 		p.fillPath(path, style.msgShadow->b);
 		p.translate(0, -st::msgShadow);
 	}
+	const auto glow = Core::KukagramAppearance::Current().glowBubbles;
+	if (glow) {
+		p.setBrush(Qt::NoBrush);
+		p.setPen(QPen(args.outbg ? Studio::Violet(44) : Studio::Mint(24), 3.));
+		p.drawPath(path);
+	}
 	p.fillPath(path, fill);
+	if (glow) {
+		p.setBrush(Qt::NoBrush);
+		p.setPen(QPen(args.outbg ? Studio::Violet(120) : Studio::Mint(64), 1.));
+		p.drawPath(path);
+	}
 	PaintStudioEdge(p, args, topLeft, topRight);
 	if (rounding.bottomLeft == Corner::Tail) {
 		const auto &tail = style.tailLeft;

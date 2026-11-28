@@ -1215,6 +1215,9 @@ void Domain::activate(not_null<Main::Account*> account) {
 	const auto changed = (_accountToActivate != i->index);
 	auto wasAuthed = false;
 
+	if (_active.current()) {
+		_beforeActiveChange.fire({});
+	}
 	_activeLifetime.destroy();
 	if (_active.current()) {
 		_lastActiveIndex = _accountToActivate;

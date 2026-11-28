@@ -20,6 +20,30 @@ state and the next steps.
   switching once per selection and closing the grid on lock passed.
   Rerun with `python3 ../kukagram-build/checks.noindex/account-grid/run.py`.
 
+## Space effects (2026-11-28, Claude)
+
+The user picked six effects. Each has a switch under «Космос и эффекты» in
+the appearance dialog (`appearance.ini`: `planet`, `meteors`, `nebula`,
+`snow`, `glowBubbles`, `switchFade`), all on by default, plus «Вернуть как
+было». Rollback point: tag `kukagram-before-space-2026-11-28` and
+`~/Developer/kukagram-backups/before-space-20261128/kukagram.app`.
+
+- Planets: `ui/chat/studio_moon.h` generates Earth, Mars and Saturn maps
+  procedurally (no downloads), with an atmosphere halo for Earth/Mars and
+  rings for Saturn. About 1 ms per frame in a standalone benchmark.
+- Meteors and nebula: `HistoryWidget::animateEmptyMoon()`. A meteor every
+  5–14 s, animated at 30 fps only while it flies; the nebula is drawn at 1/6
+  size and refreshed twice a second.
+- Snow: `core/kukagram_snow.h`, a click-through tool window over the main
+  window that repaints only the flakes, hides when the app is inactive.
+  Measured ~5% CPU while active on an idle screen, 0% in background.
+- Glow bubbles: halo and outline in `PaintStudioBubble()` (Studio only).
+- Switch fade: `core/kukagram_switch_fade.h`, a snapshot of the old account
+  fades out; triggered by `Main::Domain::beforeActiveChange()`.
+- Checked: build, rules hook, planet renders, snow on a portable profile,
+  empty screen in the installed app. The account switch fade and planet
+  choice were not clicked through in the real profile.
+
 ## Clear cache for all accounts (2026-11-28, Claude)
 
 - ☰ «Очистить кэш всех аккаунтов» opens `core/kukagram_cache_cleanup.h`.

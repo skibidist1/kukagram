@@ -276,11 +276,21 @@ struct HistoryWidget::EmptyMoon {
 	base::unique_qptr<Ui::PopupMenu> menu;
 	base::Timer live;
 	crl::time liveTick = 0;
+	crl::time meteorStart = 0;
+	crl::time nextMeteor = 0;
+	QPointF meteorFrom;
+	QPointF meteorTo;
+	QImage nebula;
+	crl::time nebulaTime = 0;
 };
 
 namespace {
 
 constexpr auto kLiveMoonFrame = crl::time(100);
+constexpr auto kMeteorFrame = crl::time(33);
+constexpr auto kMeteorDuration = crl::time(900);
+constexpr auto kNebulaFrame = crl::time(500);
+constexpr auto kNebulaScale = 6;
 constexpr auto kLiveMoonDegreesPerSecond = 6.;
 constexpr auto kLiveStars = 30;
 
@@ -333,6 +343,88 @@ struct LiveStar {
 			QSizeF(extent, extent) * 2).toAlignedRect();
 	}
 	return result;
+}
+
+[[nodiscard]] QRectF MeteorRect(QPointF from, QPointF to) {
+	return QRectF(from, to).normalized().adjusted(-6., -6., 6., 6.);
+}
+
+void PaintMeteor(
+		QPainter &p,
+		QPointF from,
+		QPointF to,
+		crl::time start,
+		crl::time now) {
+	if (!start || now < start || now - start > kMeteorDuration) {
+		return;
+	}
+	const auto progress = (now - start) / float64(kMeteorDuration);
+	const auto head = from + (to - from) * progress;
+	const auto length = std::min(1., progress * 3.) * 0.35;
+	const auto tail = head - (to - from) * length;
+	const auto fade = (progress < .15)
+		? (progress / .15)
+		: (progress > .75)
+		? ((1. - progress) / .25)
+		: 1.;
+	auto gradient = QLinearGradient(tail, head);
+	gradient.setColorAt(0., QColor(255, 255, 255, 0));
+	gradient.setColorAt(1., QColor(255, 250, 240, int(230 * fade)));
+	auto hq = PainterHighQualityEnabler(p);
+	p.setPen(QPen(QBrush(gradient), 1.8, Qt::SolidLine, Qt::RoundCap));
+	p.drawLine(tail, head);
+	p.setPen(Qt::NoPen);
+	p.setBrush(QColor(255, 255, 255, int(200 * fade)));
+	p.drawEllipse(head, 1.6, 1.6);
+}
+
+void PaintNebula(QPainter &p, QRect area, crl::time now, QImage &cache, crl::time &cacheTime) {
+	const auto size = QSize(
+		std::max(1, area.width() / kNebulaScale),
+		std::max(1, area.height() / kNebulaScale));
+	if (cache.size() != size || !cacheTime || now - cacheTime >= kNebulaFrame) {
+		cacheTime = now;
+		if (cache.size() != size) {
+			cache = QImage(size, QImage::Format_ARGB32_Premultiplied);
+		}
+		cache.fill(Qt::transparent);
+		auto q = QPainter(&cache);
+		q.setPen(Qt::NoPen);
+		struct Blob {
+			qreal x = 0.;
+			qreal y = 0.;
+			qreal radius = 0.;
+			qreal period = 0.;
+			QColor color;
+		};
+		const auto blobs = std::array<Blob, 4>{ {
+			{ .25, .35, .55, 47., QColor(148, 105, 247, 46) },
+			{ .75, .30, .45, 61., QColor(107, 234, 198, 26) },
+			{ .55, .75, .50, 53., QColor(220, 110, 200, 30) },
+			{ .20, .80, .40, 71., QColor(90, 140, 255, 30) },
+		} };
+		const auto seconds = now / 1000.;
+		for (auto i = 0; i != int(blobs.size()); ++i) {
+			const auto &blob = blobs[i];
+			const auto phase = seconds * 6.2832 / blob.period + i * 1.7;
+			const auto center = QPointF(
+				(blob.x + std::sin(phase) * .12) * size.width(),
+				(blob.y + std::cos(phase * .8) * .10) * size.height());
+			const auto radius = blob.radius * std::max(size.width(), size.height())
+				* (1. + std::sin(phase * 1.3) * .08);
+			auto gradient = QRadialGradient(center, radius);
+			gradient.setColorAt(0., blob.color);
+			auto edge = blob.color;
+			edge.setAlpha(0);
+			gradient.setColorAt(1., edge);
+			q.setBrush(gradient);
+			q.drawEllipse(center, radius, radius);
+		}
+	}
+	p.save();
+	p.setRenderHint(QPainter::SmoothPixmapTransform);
+	p.drawImage(area, cache);
+	p.restore();
 }
 
 void PaintLiveStars(QPainter &p, QRectF area, QRectF moon, crl::time now) {
@@ -9561,10 +9653,10 @@ void HistoryWidget::mousePressEvent(QMouseEvent *e) {
 }
 
 void HistoryWidget::animateEmptyMoon() {
+	const auto appearance = Core::KukagramAppearance::Current();
 	if (!_emptyMoon
 		|| !canUseEmptyMoon()
-		|| !Core::KukagramAppearance::MoonVisible()
-		|| !Core::KukagramAppearance::Current().liveBackground
+		|| !(appearance.liveBackground || appearance.meteors || appearance.nebula)
 		|| PowerSaving::On(PowerSaving::kChatBackground)
 		|| !isVisible()
 		|| !window()->isActiveWindow()) {
@@ -9575,14 +9667,52 @@ void HistoryWidget::animateEmptyMoon() {
 		? std::min(now - _emptyMoon->liveTick, crl::time(250))
 		: kLiveMoonFrame;
 	_emptyMoon->liveTick = now;
-	if (!_emptyMoon->dragPosition) {
+	const auto moonShown = Core::KukagramAppearance::MoonVisible();
+	if (appearance.liveBackground && moonShown && !_emptyMoon->dragPosition) {
 		_emptyMoon->sphere.rotate(
 			QPointF(kLiveMoonDegreesPerSecond * elapsed / 1000., 0.));
 	}
 	const auto moon = emptyMoonRect();
-	if (!moon.isEmpty()) {
-		update(LiveStarsRegion(LiveStarsRect(moon, rect()), moon)
-			+ moon.toAlignedRect());
+	const auto area = LiveStarsRect(moon, rect());
+	auto region = QRegion();
+	if (appearance.nebula && now - _emptyMoon->nebulaTime >= kNebulaFrame) {
+		region = QRegion(rect());
+	} else if (!moon.isEmpty() && moonShown) {
+		if (appearance.liveBackground) {
+			region = LiveStarsRegion(area, moon) + moon.toAlignedRect();
+		}
+		const auto meteorActive = _emptyMoon->meteorStart
+			&& now - _emptyMoon->meteorStart <= kMeteorDuration + kMeteorFrame;
+		if (appearance.meteors && !meteorActive && !area.isEmpty()) {
+			if (!_emptyMoon->nextMeteor) {
+				_emptyMoon->nextMeteor = now + 3000;
+			} else if (now >= _emptyMoon->nextMeteor) {
+				const auto random = [] {
+					return base::RandomValue<uint32>() % 1000 / 1000.;
+				};
+				_emptyMoon->meteorFrom = QPointF(
+					area.x() + area.width() * (.2 + .7 * random()),
+					area.y() + area.height() * .1 * random());
+				_emptyMoon->meteorTo = _emptyMoon->meteorFrom
+					+ QPointF(-area.width() * (.25 + .2 * random()),
+						area.height() * (.25 + .2 * random()));
+				_emptyMoon->meteorStart = now;
+				_emptyMoon->nextMeteor = now + 5000 + crl::time(random() * 9000);
+			}
+		}
+		if (_emptyMoon->meteorStart) {
+			region += MeteorRect(
+				_emptyMoon->meteorFrom,
+				_emptyMoon->meteorTo).toAlignedRect();
+			if (now - _emptyMoon->meteorStart > kMeteorDuration + kMeteorFrame) {
+				_emptyMoon->meteorStart = 0;
+			}
+		}
+	}
+	if (!region.isEmpty()) {
+		update(region);
+	} else {
+		_emptyMoon->live.callOnce(kLiveMoonFrame);
 	}
 }
 
@@ -12047,24 +12177,48 @@ void HistoryWidget::paintEvent(QPaintEvent *e) {
 		const auto moon = emptyMoonRect();
 		const auto moonArea = LiveStarsRect(moon, rect()).toAlignedRect().united(
 			moon.toAlignedRect());
-		if (clip.intersects(moonArea)
-			&& Core::KukagramAppearance::MoonVisible()
-			&& canUseEmptyMoon()) {
+		if (canUseEmptyMoon()) {
 			if (!_emptyMoon) {
 				_emptyMoon = std::make_unique<EmptyMoon>();
 			}
-			const auto live = Core::KukagramAppearance::Current().liveBackground
-				&& !PowerSaving::On(PowerSaving::kChatBackground);
-			if (live) {
-				const auto tick = _emptyMoon->liveTick;
-				PaintLiveStars(p, LiveStarsRect(moon, rect()), moon, tick);
+			const auto appearance = Core::KukagramAppearance::Current();
+			const auto animated = !PowerSaving::On(PowerSaving::kChatBackground);
+			const auto now = _emptyMoon->liveTick ? _emptyMoon->liveTick : crl::now();
+			if (appearance.nebula && animated) {
+				PaintNebula(
+					p,
+					rect(),
+					now,
+					_emptyMoon->nebula,
+					_emptyMoon->nebulaTime);
 			}
-			_emptyMoon->sphere.paint(p, moon);
-			if (live
+			if (clip.intersects(moonArea)
+				&& Core::KukagramAppearance::MoonVisible()) {
+				if (appearance.liveBackground && animated) {
+					PaintLiveStars(p, LiveStarsRect(moon, rect()), moon, now);
+				}
+				if (appearance.meteors && animated) {
+					PaintMeteor(
+						p,
+						_emptyMoon->meteorFrom,
+						_emptyMoon->meteorTo,
+						_emptyMoon->meteorStart,
+						now);
+				}
+				_emptyMoon->sphere.setPlanet(appearance.planet);
+				_emptyMoon->sphere.paint(p, moon);
+			}
+			const auto meteorActive = _emptyMoon->meteorStart != 0;
+			if (animated
+				&& (appearance.liveBackground
+					|| appearance.meteors
+					|| appearance.nebula)
 				&& window()->isActiveWindow()
 				&& !_emptyMoon->live.isActive()) {
 				_emptyMoon->live.setCallback([=] { animateEmptyMoon(); });
-				_emptyMoon->live.callOnce(kLiveMoonFrame);
+				_emptyMoon->live.callOnce(meteorActive
+					? kMeteorFrame
+					: kLiveMoonFrame);
 			}
 		}
 		const auto w = 0
