@@ -65,7 +65,6 @@ optionsList = [
     'skip-release',
     'build-stackwalk',
     'qt-asserts',
-    'skip-crash-reports',
 ]
 options = []
 runCommand = []
@@ -337,8 +336,6 @@ def filterByPlatform(commands):
     return [result, dependencies, version]
 
 def stage(name, commands, location = 'Libraries'):
-    if name in ['breakpad', 'crashpad'] and 'skip-crash-reports' in options:
-        return
     if location == 'Libraries':
         directory = libsDir
     elif location == 'ThirdParty':

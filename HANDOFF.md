@@ -3,6 +3,18 @@
 Read `README-KUKAGRAM.md` first (working rules). This note is the current
 state and the next steps.
 
+## GitHub builds (2026-11-28, Claude)
+
+- The repository is public. Never commit personal data or API credentials.
+- `.github/workflows/kukagram-macos.yml` builds a macOS arm64 Release on
+  demand (`gh workflow run kukagram-macos.yml --ref kukagram`) on a macOS 15
+  runner with the open Telegram API credentials, so it runs on macOS 15+.
+  The runner is slow: a cold build can hit the 6-hour job limit. ccache is
+  saved even then, so running it again continues from the cache.
+- The user dropped the Windows build. The source still compiles the
+  Kukagram features on Windows and gives that build its own exe name, icon,
+  data folder and app ids, but there is no Windows workflow any more.
+
 ## CPU usage (2026-11-27, Claude)
 
 Measured with `top` on the installed app and profiled with `sample`
