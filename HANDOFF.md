@@ -20,17 +20,15 @@ state and the next steps.
   switching once per selection and closing the grid on lock passed.
   Rerun with `python3 ../kukagram-build/checks.noindex/account-grid/run.py`.
 
-## GitHub builds (2026-11-28, Claude)
+## GitHub (2026-11-28, Claude)
 
 - The repository is public. Never commit personal data or API credentials.
-- `.github/workflows/kukagram-macos.yml` builds a macOS arm64 Release on
-  demand (`gh workflow run kukagram-macos.yml --ref kukagram`) on a macOS 15
-  runner with the open Telegram API credentials, so it runs on macOS 15+.
-  The runner is slow: a cold build can hit the 6-hour job limit. ccache is
-  saved even then, so running it again continues from the cache.
-- The user dropped the Windows build. The source still compiles the
-  Kukagram features on Windows and gives that build its own exe name, icon,
-  data folder and app ids, but there is no Windows workflow any more.
+- The user does not want builds on GitHub. GitHub Actions are disabled, all
+  workflows, runs and caches were removed; do not re-enable them. Build and
+  test locally only (`build-release.sh`, `package-app.sh`). GitHub is used
+  only as a code backup via `git push`.
+- The source still compiles the Kukagram features on Windows with its own
+  exe name, icon, data folder and app ids, but nothing builds it.
 
 ## CPU usage (2026-11-27, Claude)
 
