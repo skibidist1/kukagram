@@ -47,7 +47,7 @@ jobs:
         run: |
           libs="ada-url ffmpeg@6 jpeg-xl libavif libheif minizip openal-soft openh264 openssl opus qtbase qtimageformats qtshadertools qtsvg xz"
           brew update
-          brew install autoconf automake boost cmake libtool ninja pkg-config python $libs
+          brew install autoconf automake boost ccache cmake libtool ninja pkg-config python $libs
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
           xcodebuild -version > CACHE_KEY.txt
@@ -173,7 +173,23 @@ jobs:
           cmake --build build
           cmake --install build
 
+      - name: Restore compiler cache.
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: kukagram-mac-ccache-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: |
+            kukagram-mac-ccache-${{ env.CACHE_KEY }}-
+            kukagram-mac-ccache-
+
       - name: Build Kukagram.
+        timeout-minutes: 240
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_BASEDIR: ${{ github.workspace }}
+          CCACHE_MAXSIZE: 6G
+          CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime,clang_index_store
+          CCACHE_COMPILERCHECK: content
         run: |
           cd $REPO_NAME
           export CMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH$(find $LibrariesPath/local -mindepth 1 -maxdepth 1 -type d -exec printf ':%s' {} +)"
@@ -183,8 +199,23 @@ jobs:
             -DTDESKTOP_API_ID=$OPEN_API_ID \
             -DTDESKTOP_API_HASH=$OPEN_API_HASH \
             -DDESKTOP_APP_DISABLE_AUTOUPDATE=ON \
-            -DDESKTOP_APP_DISABLE_CRASH_REPORTS=ON
+            -DDESKTOP_APP_DISABLE_CRASH_REPORTS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_OBJC_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_FLAGS="-Xclang -fno-pch-timestamp" \
+            -DCMAKE_OBJCXX_FLAGS="-Xclang -fno-pch-timestamp"
+          ccache -z
           cmake --build build --target Telegram
+          ccache -s
+
+      - name: Save compiler cache.
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: kukagram-mac-ccache-${{ env.CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Package.
         run: |

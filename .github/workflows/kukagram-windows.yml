@@ -133,7 +133,14 @@ jobs:
       - name: Rebuild trimmed Rust sources.
         run: |
           if not exist %LibrariesPath%\tdesktop_rust\out\src\wallet_engine\wallet_engine.cpp (
-            if exist %LibrariesPath%\cache_keys\tdesktop_rust del %LibrariesPath%\cache_keys\tdesktop_rust
+            for %%s in (tlottie wallet-engine tdesktop_rust) do (
+              if exist %LibrariesPath%\cache_keys\%%s del %LibrariesPath%\cache_keys\%%s
+            )
+          )
+          if not exist %LibrariesPath%\tlottie\Cargo.toml (
+            for %%s in (tlottie wallet-engine tdesktop_rust) do (
+              if exist %LibrariesPath%\cache_keys\%%s del %LibrariesPath%\cache_keys\%%s
+            )
           )
 
       - name: Libraries.
@@ -145,7 +152,7 @@ jobs:
       - name: Free up some disk space.
         if: always()
         shell: bash
-        run: find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -path '*/nv-codec-headers/*' -o -path '*/mkspecs/*' -o -path '*/plugins/*' -o -path '*/translations/*' -o -path '*/tdesktop_rust/*' ')' -type f ')' -o -empty ')' -delete || true
+        run: find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -path '*/nv-codec-headers/*' -o -path '*/mkspecs/*' -o -path '*/plugins/*' -o -path '*/translations/*' -o -path '*/tdesktop_rust/*' -o -path '*/tlottie/*' -o -path '*/wallet-engine/*' ')' -type f ')' -o -empty ')' -delete || true
 
       - name: Save ThirdParty cache.
         if: always()
