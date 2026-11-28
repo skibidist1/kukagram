@@ -450,6 +450,9 @@ void ShowKukagramNotificationAccountsDialog(not_null<Main::Domain*> domain) {
 			: name + u"  ·  "_q + Ui::FormatPhone(account.phone);
 		auto item = new QListWidgetItem(label, list);
 		item->setData(Qt::UserRole, QVariant::fromValue(qulonglong(account.uniqueId)));
+		item->setData(
+			KukagramAccountGroups::kPhoneDigitsRole,
+			KukagramAccountGroups::DigitsOnly(account.phone));
 		item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
 		item->setCheckState(domain->notificationsAllowed(account.uniqueId)
 			? Qt::Checked : Qt::Unchecked);
@@ -461,11 +464,12 @@ void ShowKukagramNotificationAccountsDialog(not_null<Main::Domain*> domain) {
 	});
 	QObject::connect(search, &QLineEdit::textChanged, dialog,
 		[=](const QString &query) {
+			const auto search = KukagramAccountGroups::SearchQuery(query);
 			for (auto i = 0; i != list->count(); ++i) {
 				const auto item = list->item(i);
-				item->setHidden(!KukagramAccountGroups::LabelMatches(
+				item->setHidden(!search.matches(
 					item->text(),
-					query));
+					item->data(KukagramAccountGroups::kPhoneDigitsRole).toString()));
 			}
 		});
 	auto buttonsRow = new QHBoxLayout();

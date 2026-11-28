@@ -281,7 +281,6 @@ struct HistoryWidget::EmptyMoon {
 namespace {
 
 constexpr auto kLiveMoonFrame = crl::time(100);
-constexpr auto kLiveMoonIdleCheck = crl::time(1000);
 constexpr auto kLiveMoonDegreesPerSecond = 6.;
 constexpr auto kLiveStars = 30;
 
@@ -477,6 +476,18 @@ HistoryWidget::HistoryWidget(
 		if (locked && _emptyMoon) {
 			stopEmptyMoonDrag();
 			_emptyMoon.reset();
+		}
+	}, lifetime());
+
+	rpl::merge(
+		windowActiveValue() | rpl::skip(1) | rpl::to_empty,
+		PowerSaving::OnValue(PowerSaving::kChatBackground)
+			| rpl::skip(1) | rpl::to_empty
+	) | rpl::on_next([=] {
+		if (_emptyMoon && !_list) {
+			_emptyMoon->live.cancel();
+			_emptyMoon->liveTick = 0;
+			update(LiveStarsRect(emptyMoonRect(), rect()).toAlignedRect());
 		}
 	}, lifetime());
 
@@ -9554,12 +9565,9 @@ void HistoryWidget::animateEmptyMoon() {
 		|| !canUseEmptyMoon()
 		|| !Core::KukagramAppearance::MoonVisible()
 		|| !Core::KukagramAppearance::Current().liveBackground
-		|| !isVisible()) {
-		return;
-	}
-	if (!window()->isActiveWindow()) {
-		_emptyMoon->liveTick = 0;
-		_emptyMoon->live.callOnce(kLiveMoonIdleCheck);
+		|| PowerSaving::On(PowerSaving::kChatBackground)
+		|| !isVisible()
+		|| !window()->isActiveWindow()) {
 		return;
 	}
 	const auto now = crl::now();
@@ -9572,8 +9580,10 @@ void HistoryWidget::animateEmptyMoon() {
 			QPointF(kLiveMoonDegreesPerSecond * elapsed / 1000., 0.));
 	}
 	const auto moon = emptyMoonRect();
-	update(LiveStarsRegion(LiveStarsRect(moon, rect()), moon)
-		+ moon.toAlignedRect());
+	if (!moon.isEmpty()) {
+		update(LiveStarsRegion(LiveStarsRect(moon, rect()), moon)
+			+ moon.toAlignedRect());
+	}
 }
 
 bool HistoryWidget::canUseEmptyMoon() const {
@@ -12043,12 +12053,16 @@ void HistoryWidget::paintEvent(QPaintEvent *e) {
 			if (!_emptyMoon) {
 				_emptyMoon = std::make_unique<EmptyMoon>();
 			}
-			const auto live = Core::KukagramAppearance::Current().liveBackground;
+			const auto live = Core::KukagramAppearance::Current().liveBackground
+				&& !PowerSaving::On(PowerSaving::kChatBackground);
 			if (live) {
-				PaintLiveStars(p, LiveStarsRect(moon, rect()), moon, crl::now());
+				const auto tick = _emptyMoon->liveTick;
+				PaintLiveStars(p, LiveStarsRect(moon, rect()), moon, tick);
 			}
 			_emptyMoon->sphere.paint(p, moon);
-			if (live && !_emptyMoon->live.isActive()) {
+			if (live
+				&& window()->isActiveWindow()
+				&& !_emptyMoon->live.isActive()) {
 				_emptyMoon->live.setCallback([=] { animateEmptyMoon(); });
 				_emptyMoon->live.callOnce(kLiveMoonFrame);
 			}

@@ -635,7 +635,8 @@ void Domain::activateStored(
 		int discardPendingIndex,
 		bool newWindow) {
 	if (_switchingStored || _resettingStored
-		|| _retiringInactiveAccounts || Core::Quitting()) {
+		|| _retiringInactiveAccounts || Core::Quitting()
+		|| Core::App().passcodeLocked()) {
 		return;
 	}
 	const auto stored = storedAccounts();
@@ -651,7 +652,8 @@ void Domain::activateStored(
 	const auto targetId = target->uniqueId;
 	auto invoke = crl::guard(this, [=] {
 		if (_switchingStored || _resettingStored
-			|| _retiringInactiveAccounts || Core::Quitting()) {
+			|| _retiringInactiveAccounts || Core::Quitting()
+			|| Core::App().passcodeLocked()) {
 			return;
 		}
 		const auto list = storedAccounts();

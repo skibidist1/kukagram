@@ -87,9 +87,8 @@ Rules for the user, in Russian:
 - Press ⌘⌥K or choose «Поиск аккаунта» in ☰. Search by name, local
   label, username or phone. Select a result and press Enter to switch.
 - Select «Изменить подпись» to save a local label for an account.
-- System shortcuts for closing, quitting, hiding, minimizing and full screen
-  cannot be assigned to account actions. Previously saved conflicting
-  bindings fall back to the defaults when loaded.
+- Account shortcuts can use system combinations such as ⌘W. While Kukagram
+  handles an assigned combination, it takes priority over the window action.
 - In «Группы аккаунтов», choose a group and click «Открыть в меню ☰».
   The menu shows the group name and its members. «Все аккаунты» restores
   the full list.

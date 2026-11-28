@@ -3,6 +3,23 @@
 Read `README-KUKAGRAM.md` first (working rules). This note is the current
 state and the next steps.
 
+## Account grid and animation (2026-11-28, Codex)
+
+- The account grid renders avatars on demand and stores them in Qt's bounded
+  pixmap cache. It closes when the passcode locks and ignores duplicate
+  activation signals. The domain rechecks the passcode when applying a
+  deferred account switch. Custom shortcuts are still supported.
+- Account search now prepares the query once and matches normalized phone
+  numbers separately from the digits in names and usernames.
+- The live Moon pauses when the window loses focus and follows Telegram's
+  chat background power saving setting. Window activation restarts it
+  without a background timer.
+- The offscreen test at 2× scale used 1,000 fake accounts. The old grid
+  rendered 1,000 avatars by its first paint, compared with 25 in the new grid.
+  Peak process memory fell from 121 to 54 MiB in that test. Search, scrolling,
+  switching once per selection and closing the grid on lock passed.
+  Rerun with `python3 ../kukagram-build/checks.noindex/account-grid/run.py`.
+
 ## GitHub builds (2026-11-28, Claude)
 
 - The repository is public. Never commit personal data or API credentials.

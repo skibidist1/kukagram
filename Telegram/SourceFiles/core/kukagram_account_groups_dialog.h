@@ -89,7 +89,6 @@ public:
 		_search = new QLineEdit(this);
 		_search->setAccessibleName(u"Поиск аккаунта"_q);
 		_search->setPlaceholderText(u"Имя, подпись, @username или номер"_q);
-		termsChanged();
 		toolsRow->addWidget(_search, 1);
 		_view = new QComboBox(this);
 		_view->setAccessibleName(u"Какие аккаунты показать"_q);
@@ -123,7 +122,6 @@ public:
 			filter();
 		});
 		connect(_search, &QLineEdit::textChanged, this, [=] {
-			termsChanged();
 			filter();
 		});
 		connect(_search, &QLineEdit::returnPressed, this, [=] {
@@ -241,11 +239,6 @@ private:
 		const auto index = _group->currentIndex();
 		return (index >= 0 && index < int(_groups.size()))
 			? &_groups[index] : nullptr;
-	}
-
-	void termsChanged() {
-		_terms = _search->text().simplified().split(
-			QChar(' '), Qt::SkipEmptyParts);
 	}
 
 	void warn(const QString &text) {
@@ -483,6 +476,7 @@ private:
 				}
 				const auto item = new QListWidgetItem(label, _accounts);
 				item->setData(Qt::UserRole, QVariant::fromValue(qulonglong(id)));
+				item->setData(kPhoneDigitsRole, DigitsOnly(account.phone));
 				if (!_quickSearch) {
 					item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
 					item->setCheckState(members.contains(id) ? Qt::Checked : Qt::Unchecked);
@@ -499,14 +493,15 @@ private:
 		const auto blocker = QSignalBlocker(_accounts);
 		const auto group = selectedGroup();
 		const auto membersOnly = !_quickSearch && (_view->currentIndex() == 0);
+		const auto query = SearchQuery(_search->text());
 		auto shown = 0;
 		auto members = 0;
 		QListWidgetItem *first = nullptr;
 		for (auto i = 0; i != _accounts->count(); ++i) {
 			const auto item = _accounts->item(i);
 			const auto checked = item->checkState() == Qt::Checked;
-			const auto matches = LabelMatches(item->text(), _search->text());
-			const auto show = (!membersOnly || checked) && matches;
+			const auto show = (!membersOnly || checked)
+				&& query.matches(item->text(), item->data(kPhoneDigitsRole).toString());
 			item->setHidden(!show);
 			members += checked;
 			if (show) {
@@ -525,7 +520,7 @@ private:
 		} else if (!group) {
 			_status->setText(u"Создай группу, чтобы добавить аккаунты."_q);
 		} else if (!shown) {
-			_status->setText(_terms.empty()
+			_status->setText(query.empty()
 				? u"В группе пока нет доступных аккаунтов."_q
 				: u"Аккаунты не найдены."_q);
 		} else {
@@ -580,7 +575,6 @@ private:
 	QString _workDir;
 	Groups _groups;
 	bool _quickSearch = false;
-	QStringList _terms;
 	QComboBox *_group = nullptr;
 	QComboBox *_view = nullptr;
 	QLineEdit *_search = nullptr;

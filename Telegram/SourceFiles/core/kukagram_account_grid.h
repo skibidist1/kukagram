@@ -3,14 +3,18 @@
 #include "core/kukagram_account_groups_dialog.h"
 
 #include <QtGui/QIcon>
+#include <QtGui/QIconEngine>
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
 #include <QtGui/QPixmap>
+#include <QtGui/QPixmapCache>
 
 #include <array>
 #include <unordered_map>
 
 namespace Core::KukagramAccountGroups {
+
+inline constexpr auto kGridIconSize = 64;
 
 [[nodiscard]] inline QColor GridGroupColor(int index) {
 	static const auto colors = std::array{
@@ -47,7 +51,7 @@ namespace Core::KukagramAccountGroups {
 		std::optional<QColor> ring,
 		bool current,
 		qreal ratio) {
-	constexpr auto kSize = 64;
+	constexpr auto kSize = kGridIconSize;
 	auto pixmap = QPixmap(QSize(kSize, kSize) * ratio);
 	pixmap.setDevicePixelRatio(ratio);
 	pixmap.fill(Qt::transparent);
@@ -79,6 +83,69 @@ namespace Core::KukagramAccountGroups {
 	return pixmap;
 }
 
+class GridAvatarIcon final : public QIconEngine {
+public:
+	GridAvatarIcon(QString name, QColor ring, bool current)
+	: _name(std::move(name))
+	, _ring(ring)
+	, _current(current) {
+	}
+
+	~GridAvatarIcon() override {
+		QPixmapCache::remove(_cacheKey);
+	}
+
+	QIconEngine *clone() const override {
+		return new GridAvatarIcon(_name, _ring, _current);
+	}
+
+	void paint(
+			QPainter *painter,
+			const QRect &rect,
+			QIcon::Mode mode,
+			QIcon::State state) override {
+		painter->drawPixmap(
+			rect,
+			scaledPixmap(rect.size(), mode, state, painter->device()->devicePixelRatioF()));
+	}
+
+	QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override {
+		return scaledPixmap(size, mode, state, 1.);
+	}
+
+	QPixmap scaledPixmap(
+			const QSize &size,
+			QIcon::Mode,
+			QIcon::State,
+			qreal scale) override {
+		const auto ratio = std::min(size.width(), size.height()) * scale / kGridIconSize;
+		if (ratio <= 0.) {
+			return {};
+		}
+		auto result = QPixmap();
+		if (_ratio != ratio || !QPixmapCache::find(_cacheKey, &result)) {
+			QPixmapCache::remove(_cacheKey);
+			result = GridAvatar(
+				_name,
+				_ring.isValid() ? std::optional(_ring) : std::nullopt,
+				_current,
+				ratio);
+			_cacheKey = QPixmapCache::insert(result);
+			_ratio = ratio;
+		}
+		result.setDevicePixelRatio(scale);
+		return result;
+	}
+
+private:
+	QString _name;
+	QColor _ring;
+	bool _current = false;
+	qreal _ratio = 0.;
+	QPixmapCache::Key _cacheKey;
+
+};
+
 class GridDialog final : public QDialog {
 public:
 	GridDialog(QWidget *parent, not_null<Main::Domain*> domain)
@@ -99,7 +166,7 @@ public:
 		_list = new QListWidget(this);
 		_list->setAccessibleName(u"Аккаунты"_q);
 		_list->setViewMode(QListView::IconMode);
-		_list->setIconSize(QSize(64, 64));
+		_list->setIconSize(QSize(kGridIconSize, kGridIconSize));
 		_list->setGridSize(QSize(112, 106));
 		_list->setResizeMode(QListView::Adjust);
 		_list->setMovement(QListView::Static);
@@ -124,6 +191,12 @@ public:
 				QListWidgetItem *item) {
 			activate(item);
 		});
+		connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
+			this, &QDialog::reject);
+		Core::App().passcodeLockChanges(
+		) | rpl::filter([](bool locked) { return locked; }) | rpl::on_next([=] {
+			reject();
+		}, _lifetime);
 		build();
 		_search->setFocus();
 	}
@@ -165,46 +238,46 @@ private:
 		_legend->setText(legend.join(u"&nbsp;&nbsp; "_q));
 		_legend->setVisible(!legend.isEmpty());
 
-		const auto labels = QSettings(
-			QDir(cWorkingDir()).filePath(u"account-labels.ini"_q),
-			QSettings::IniFormat);
+		const auto labelsPath = QDir(cWorkingDir()).filePath(u"account-labels.ini"_q);
+		const auto labels = QFileInfo(labelsPath).isSymLink()
+			? nullptr
+			: std::make_unique<QSettings>(labelsPath, QSettings::IniFormat);
 		const auto currentId = [&]() -> quint64 {
 			if (const auto session = domain->active().maybeSession()) {
 				return session->uniqueId();
 			}
 			return 0;
 		}();
-		const auto ratio = devicePixelRatioF();
 		for (const auto &account : domain->storedAccounts()) {
 			const auto id = account.uniqueId;
 			if (!id) {
 				continue;
 			}
-			const auto alias = NormalizeName(
-				labels.value(QString::number(id)).toString());
+			const auto alias = labels
+				? NormalizeName(labels->value(QString::number(id)).toString())
+				: QString();
 			const auto name = account.name.isEmpty()
 				? u"Аккаунт %1"_q.arg(account.index + 1)
 				: account.name;
 			const auto title = alias.isEmpty() ? name : alias;
 			const auto ring = colorOf.find(id);
 			const auto item = new QListWidgetItem(
-				QIcon(GridAvatar(
+				QIcon(new GridAvatarIcon(
 					name,
-					(ring != end(colorOf))
-						? std::make_optional(ring->second)
-						: std::nullopt,
-					id == currentId,
-					ratio)),
+					(ring != end(colorOf)) ? ring->second : QColor(),
+					id == currentId)),
 				title,
 				_list);
 			item->setData(Qt::UserRole, QVariant::fromValue(qulonglong(id)));
+			const auto phoneDigits = DigitsOnly(account.phone);
+			item->setData(kPhoneDigitsRole, phoneDigits);
 			item->setData(
 				Qt::UserRole + 1,
 				QStringList{
 					name,
 					alias,
-					account.username,
-					DigitsOnly(account.phone),
+					account.username.isEmpty() ? QString() : '@' + account.username,
+					phoneDigits,
 				}.join(' '));
 			item->setToolTip(account.phone.isEmpty()
 				? name
@@ -217,19 +290,22 @@ private:
 	}
 
 	void filter() {
-		const auto query = _search->text().trimmed();
+		const auto query = SearchQuery(_search->text());
 		for (auto i = 0; i != _list->count(); ++i) {
 			const auto item = _list->item(i);
 			const auto haystack = item->data(Qt::UserRole + 1).toString();
-			item->setHidden(!query.isEmpty()
-				&& !LabelMatches(haystack, query));
+			item->setHidden(!query.matches(
+				haystack,
+				item->data(kPhoneDigitsRole).toString()));
 		}
 	}
 
 	void activate(QListWidgetItem *item) {
-		if (!item || item->isHidden() || !_domain) {
+		if (_activating || !item || item->isHidden() || !_domain
+			|| Core::Quitting() || Core::App().passcodeLocked()) {
 			return;
 		}
+		_activating = true;
 		const auto id = item->data(Qt::UserRole).toULongLong();
 		const auto weak = _domain;
 		accept();
@@ -252,6 +328,8 @@ private:
 	QLineEdit *_search = nullptr;
 	QListWidget *_list = nullptr;
 	QLabel *_legend = nullptr;
+	bool _activating = false;
+	rpl::lifetime _lifetime;
 
 };
 

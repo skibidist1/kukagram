@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QLockFile>
 #include <QtCore/QSaveFile>
 #include <QtCore/QSet>
+#include <QtCore/QStringList>
 
 #include <algorithm>
 #include <utility>
@@ -66,36 +67,47 @@ struct ReadResult final {
 	return result;
 }
 
-// A phone typed as "+1 681" must match the stored digits "1681...".
-[[nodiscard]] inline bool LabelMatches(
-		const QString &label,
-		const QString &query) {
-	const auto simplified = query.simplified();
-	if (simplified.isEmpty()) {
-		return true;
+class SearchQuery final {
+public:
+	explicit SearchQuery(const QString &query) {
+		const auto simplified = query.simplified();
+		_terms = simplified.split(QChar(' '), Qt::SkipEmptyParts);
+		const auto phoneLike = std::all_of(
+			simplified.begin(),
+			simplified.end(),
+			[](QChar character) {
+				return character.isDigit()
+					|| character == QChar('+')
+					|| character == QChar(' ')
+					|| character == QChar('-')
+					|| character == QChar('(')
+					|| character == QChar(')');
+			});
+		if (phoneLike) {
+			_digits = DigitsOnly(simplified);
+		}
 	}
-	const auto phoneLike = std::all_of(
-		simplified.begin(),
-		simplified.end(),
-		[](QChar character) {
-			return character.isDigit()
-				|| character == QChar('+')
-				|| character == QChar(' ')
-				|| character == QChar('-')
-				|| character == QChar('(')
-				|| character == QChar(')');
-		});
-	const auto digits = DigitsOnly(simplified);
-	if (phoneLike
-		&& !digits.isEmpty()
-		&& DigitsOnly(label).contains(digits)) {
-		return true;
+
+	[[nodiscard]] bool matches(
+			const QString &label,
+			const QString &phoneDigits) const {
+		return (!_digits.isEmpty() && phoneDigits.contains(_digits))
+			|| std::all_of(_terms.begin(), _terms.end(), [&](const QString &term) {
+				return label.contains(term, Qt::CaseInsensitive);
+			});
 	}
-	const auto terms = simplified.split(QChar(' '), Qt::SkipEmptyParts);
-	return std::all_of(terms.begin(), terms.end(), [&](const QString &term) {
-		return label.contains(term, Qt::CaseInsensitive);
-	});
-}
+
+	[[nodiscard]] bool empty() const {
+		return _terms.isEmpty();
+	}
+
+private:
+	QStringList _terms;
+	QString _digits;
+
+};
+
+inline constexpr auto kPhoneDigitsRole = Qt::UserRole + 2;
 
 namespace details {
 
